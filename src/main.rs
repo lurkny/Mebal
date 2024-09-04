@@ -1,3 +1,4 @@
+
 use std::{
     io,
     io::Write,
@@ -5,10 +6,18 @@ use std::{
     collections::VecDeque,
     fs::File,
 };
-use reqwest::{
-    blocking::Client,
-};
+use std::io::ErrorKind::WouldBlock;
+use scrap::{Display, Capturer, Frame as s_Frame};
+use reqwest::blocking::Client;
 use std::io::Read;
+use std::ops::Deref;
+use std::time::Duration;
+use anyhow::Result;
+use device_query::{DeviceQuery, DeviceState, Keycode};
+use lazy_static::lazy_static;
+use lz4::{EncoderBuilder, Decoder};
+use windows::Foundation::TimeSpan;
+use serde_json::Value;
 use windows_capture::{
     capture::GraphicsCaptureApiHandler,
     frame::Frame,
@@ -17,12 +26,6 @@ use windows_capture::{
     settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings},
     encoder::{AudioSettingBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder}
 };
-use anyhow::{Result,Context};
-use device_query::{DeviceQuery, DeviceState, Keycode};
-use lazy_static::lazy_static;
-use lz4::{EncoderBuilder, Decoder};
-use windows::Foundation::TimeSpan;
-use serde_json::Value;
 
 pub struct CompressedFrame {
     pub compressed_data: Vec<u8>,
@@ -32,89 +35,64 @@ pub struct CompressedFrame {
 }
 
 lazy_static! {
-static ref DEVICE_STATE: DeviceState = DeviceState::new();
+    static ref DEVICE_STATE: DeviceState = DeviceState::new();
 }
 
 struct Capture {
     frame_buffer: VecDeque<CompressedFrame>,
     start: Instant,
     fps: u32,
-    encoder: Option<VideoEncoder>,
 }
 
-impl GraphicsCaptureApiHandler for Capture {
-    type Flags = String;
-    type Error = Box<dyn std::error::Error + Send + Sync>;
-
-    fn new(message: Self::Flags) -> Result<Self, Self::Error> {
-        println!("Got The Flag: {message}");
-
-        let encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(2560,1440 ).frame_rate(60),
-            AudioSettingBuilder::default().disabled(true),
-            ContainerSettingsBuilder::default(),
-            "output.mp4"
-        )?;
-
+impl Capture {
+    fn new() -> Result<Self> {
         Ok(Self {
             frame_buffer: VecDeque::with_capacity(60 * 10),
             start: Instant::now(),
             fps: 60,
-            encoder: Some(encoder)
         })
     }
 
-    fn on_frame_arrived(&mut self, frame: &mut Frame, capture_control: InternalCaptureControl) -> Result<(), Self::Error> {
-        print!("\rRecording for: {} seconds", self.start.elapsed().as_secs());
-        io::stdout().flush()?;
+    fn start_scrap_cap(&mut self, capturer: &mut Capturer) -> Result<()> {
+        loop {
+            match capturer.frame() {
+                Ok(frame) => {
+                    let elapsed_time = self.start.elapsed();
+                    let frame_index = self.frame_buffer.len() as u32;
+                    let frame_time = TimeSpan::from(Duration::from_micros((frame_index * 1_000_000 / self.fps) as u64));
+                    let compressed = Self::compress_frame(frame.deref())?;
+                    let frame_data = CompressedFrame {
+                        compressed_data: compressed,
+                        width: capturer.width() as u32,
+                        height: capturer.height() as u32,
+                        time: frame_time
+                    };
 
-        let mut raw_buffer = frame.buffer().unwrap();
-        let compressed = Self::compress_frame(&raw_buffer.as_raw_nopadding_buffer().unwrap())?;
+                    self.frame_buffer.push_back(frame_data);
 
-        let frame_data = CompressedFrame {
-            compressed_data: compressed,
-            width: frame.width(),
-            height: frame.height(),
-            time: frame.timespan()
-        };
+                    let buffer_size = self.fps * 10;
+                    while self.frame_buffer.len() > buffer_size as usize {
+                        drop(self.frame_buffer.pop_front().unwrap());
+                    }
 
-        self.frame_buffer.push_back(frame_data);
+                    print!("\rRecording for: {} seconds", elapsed_time.as_secs());
+                    io::stdout().flush()?;
 
-        let buffer_size = self.fps * 10;
-        while self.frame_buffer.len() > buffer_size as usize {
-            drop(self.frame_buffer.pop_front().unwrap());
-        }
-
-        if DEVICE_STATE.get_keys().contains(&Keycode::Key9) {
-            println!("\nSaving buffer to file...");
-            let output_path = format!("output_{}.mp4", self.start.elapsed().as_secs());
-            let mut encoder = VideoEncoder::new(
-                VideoSettingsBuilder::new(self.frame_buffer[0].width, self.frame_buffer[0].height).frame_rate(self.fps),
-                AudioSettingBuilder::default().disabled(true),
-                ContainerSettingsBuilder::default(),
-                output_path.clone()
-            )?;
-
-            for compressed_frame in self.frame_buffer.iter() {
-                let mut decompressed_data = Self::decompress_frame(&compressed_frame.compressed_data)?;
-                Self::convert_to_bottom_up(&mut decompressed_data, compressed_frame.width, compressed_frame.height);
-                encoder.send_frame_buffer(&decompressed_data, compressed_frame.time.Duration)?;
+                    if DEVICE_STATE.get_keys().contains(&Keycode::Key9) {
+                        println!("\nSaving buffer to file...");
+                        self.save_buffer()?;
+                        return Ok(());
+                    }
+                }
+                Err(ref e) if e.kind() == WouldBlock => {
+                    // Wait for the next frame
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => return Err(e.into()),
             }
-            encoder.finish()?;
-            println!("Buffer saved successfully.");
-            Self::upload_file(&output_path.as_str())?;
         }
-
-        Ok(())
     }
 
-    fn on_closed(&mut self) -> Result<(), Self::Error> {
-        println!("Capture Session Closed");
-        Ok(())
-    }
-}
-
-impl Capture {
     fn convert_to_bottom_up(buffer: &mut [u8], width: u32, height: u32) {
         let stride = width as usize * 4;
         let half_height = height as usize / 2;
@@ -140,26 +118,42 @@ impl Capture {
         Ok(decompressed_data)
     }
 
-    fn upload_file(file_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    fn save_buffer(&self) -> Result<()> {
+        let mut encoder = VideoEncoder::new(
+            VideoSettingsBuilder::new(self.frame_buffer[0].width, self.frame_buffer[0].height).frame_rate(self.fps),
+            AudioSettingBuilder::default().disabled(true),
+            ContainerSettingsBuilder::default(),
+            "output.mp4"
+        )?;
+
+        for frame in self.frame_buffer.iter() {
+            let mut decompressed = Self::decompress_frame(&frame.compressed_data)?;
+            Self::convert_to_bottom_up(&mut decompressed, frame.width, frame.height);
+            encoder.send_frame_buffer(&decompressed, frame.time.Duration);
+        
+    }
+    encoder.finish()?;
+    Ok(())
+}
+
+    fn upload_file(file_path: &str) -> Result<()> {
         let client = Client::new();
         let file = File::open(file_path)?;
 
-        // First, get the upload URL
         let upload_url_response = client.post("https://videolink.brodymlarson2.workers.dev/upload")
             .header("x-secret-password", "pls-no-dos")
             .send()?;
 
         if !upload_url_response.status().is_success() {
-            return Err(format!("Failed to get upload URL: {}", upload_url_response.status()).into());
+            return Err(anyhow::anyhow!("Failed to get upload URL: {}", upload_url_response.status()));
         }
 
-        let json: Value = upload_url_response.json::<Value>()?;
+        let json: Value = upload_url_response.json()?;
         let upload_url = json["result"]["uploadURL"].as_str()
-            .ok_or("Failed to extract uploadURL from response")?;
+            .ok_or_else(|| anyhow::anyhow!("Failed to extract uploadURL from response"))?;
 
         println!("Got upload URL: {}", upload_url);
 
-        // Now, upload the file to the obtained URL
         let form = reqwest::blocking::multipart::Form::new()
             .file("file", file_path)?;
 
@@ -171,20 +165,15 @@ impl Capture {
             println!("File uploaded successfully");
             Ok(())
         } else {
-            Err(format!("Upload failed with status: {}", response.status()).into())
+            Err(anyhow::anyhow!("Upload failed with status: {}", response.status()))
         }
     }
 }
 
-fn main() {
-    let primary_monitor = Monitor::primary().expect("There is no primary monitor");
-    let settings = Settings::new(
-        primary_monitor,
-        CursorCaptureSettings::Default,
-        DrawBorderSettings::Default,
-        ColorFormat::Bgra8,
-        "Yea This Works".to_string(),
-    );
+fn main() -> Result<()> {
+    let display = Display::primary()?;
+    let mut capturer = Capturer::new(display)?;
+    let mut capture = Capture::new()?;
 
-    Capture::start(settings).expect("Screen Capture Failed");
+    capture.start_scrap_cap(&mut capturer)
 }

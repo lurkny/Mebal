@@ -1,94 +1,93 @@
-
 use std::{
-    io,
-    io::Write,
-    time::Instant,
     collections::VecDeque,
-    fs::File,
+    io::{self, ErrorKind::WouldBlock, Read, Write},
+    ops::Deref,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread,
+    time::{Duration, Instant},
 };
-use std::io::ErrorKind::WouldBlock;
-use scrap::{Display, Capturer, Frame as s_Frame};
-use reqwest::blocking::Client;
-use std::io::Read;
-use std::ops::Deref;
-use std::time::Duration;
+
 use anyhow::Result;
-use device_query::{DeviceQuery, DeviceState, Keycode};
-use lazy_static::lazy_static;
-use lz4::{EncoderBuilder, Decoder};
-use windows::Foundation::TimeSpan;
+use lz4::{Decoder, EncoderBuilder};
+use rdev::{listen, EventType, Key};
+use reqwest::blocking::Client;
+use scrap::{Capturer, Display};
 use serde_json::Value;
-use windows_capture::{
-    capture::GraphicsCaptureApiHandler,
-    frame::Frame,
-    graphics_capture_api::InternalCaptureControl,
-    monitor::Monitor,
-    settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings},
-    encoder::{AudioSettingBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder}
+use windows::Foundation::TimeSpan;
+use windows_capture::encoder::{
+    AudioSettingBuilder,
+    ContainerSettingsBuilder,
+    VideoEncoder,
+    VideoSettingsBuilder,
 };
 
 pub struct CompressedFrame {
     pub compressed_data: Vec<u8>,
     pub width: u32,
     pub height: u32,
-    pub time: TimeSpan,
+    pub timestamp: Duration,
 }
 
-lazy_static! {
-    static ref DEVICE_STATE: DeviceState = DeviceState::new();
-}
+
 
 struct Capture {
     frame_buffer: VecDeque<CompressedFrame>,
     start: Instant,
     fps: u32,
+    stop_flag: Arc<AtomicBool>,
 }
 
 impl Capture {
-    fn new() -> Result<Self> {
+    fn new(fps: u32, stop_flag: Arc<AtomicBool>) -> Result<Self> {
         Ok(Self {
-            frame_buffer: VecDeque::with_capacity(60 * 10),
+            frame_buffer: VecDeque::with_capacity(fps as usize * 10),
             start: Instant::now(),
-            fps: 60,
+            fps,
+            stop_flag,
         })
     }
 
     fn start_scrap_cap(&mut self, capturer: &mut Capturer) -> Result<()> {
+        let frame_duration = Duration::from_secs_f64(1.0 / self.fps as f64);
+        let mut next_capture_time = self.start;
+
         loop {
-            match capturer.frame() {
-                Ok(frame) => {
-                    let elapsed_time = self.start.elapsed();
-                    let frame_index = self.frame_buffer.len() as u32;
-                    let frame_time = TimeSpan::from(Duration::from_micros((frame_index * 1_000_000 / self.fps) as u64));
-                    let compressed = Self::compress_frame(frame.deref())?;
-                    let frame_data = CompressedFrame {
-                        compressed_data: compressed,
-                        width: capturer.width() as u32,
-                        height: capturer.height() as u32,
-                        time: frame_time
-                    };
+            if self.stop_flag.load(Ordering::SeqCst) {
+                println!("\nSaving buffer to file...");
+                self.save_buffer()?;
+                return Ok(());
+            }
 
-                    self.frame_buffer.push_back(frame_data);
+            let now = Instant::now();
+            if now >= next_capture_time {
+                match capturer.frame() {
+                    Ok(frame) => {
+                        let elapsed_time = now.duration_since(self.start);
+                        let compressed = Self::compress_frame(frame.deref())?;
+                        let frame_data = CompressedFrame {
+                            compressed_data: compressed,
+                            width: capturer.width() as u32,
+                            height: capturer.height() as u32,
+                            timestamp: elapsed_time,
+                        };
 
-                    let buffer_size = self.fps * 10;
-                    while self.frame_buffer.len() > buffer_size as usize {
-                        drop(self.frame_buffer.pop_front().unwrap());
+                        self.frame_buffer.push_back(frame_data);
+
+                        print!("\rRecording for: {:.2} seconds", elapsed_time.as_secs_f32());
+                        io::stdout().flush()?;
+
+                        next_capture_time += frame_duration;
                     }
-
-                    print!("\rRecording for: {} seconds", elapsed_time.as_secs());
-                    io::stdout().flush()?;
-
-                    if DEVICE_STATE.get_keys().contains(&Keycode::Key9) {
-                        println!("\nSaving buffer to file...");
-                        self.save_buffer()?;
-                        return Ok(());
+                    Err(ref e) if e.kind() == WouldBlock => {
+                        // Frame not ready, try again on next iteration
                     }
+                    Err(e) => return Err(e.into()),
                 }
-                Err(ref e) if e.kind() == WouldBlock => {
-                    // Wait for the next frame
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(e.into()),
+            } else {
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
     }
@@ -105,7 +104,7 @@ impl Capture {
     }
 
     fn compress_frame(buffer: &[u8]) -> Result<Vec<u8>> {
-        let mut encoder  = EncoderBuilder::new().level(1).build(Vec::new())?;
+        let mut encoder  = EncoderBuilder::new().level(0).favor_dec_speed(true).build(Vec::new())?;
         encoder.write_all(buffer)?;
         let (compressed_data, result) = encoder.finish();
         result.map_err(|e| e.into()).map(|_| compressed_data)
@@ -120,7 +119,9 @@ impl Capture {
 
     fn save_buffer(&self) -> Result<()> {
         let mut encoder = VideoEncoder::new(
-            VideoSettingsBuilder::new(self.frame_buffer[0].width, self.frame_buffer[0].height).frame_rate(self.fps),
+            VideoSettingsBuilder::new(self.frame_buffer[0].width, self.frame_buffer[0].height)
+                .frame_rate(self.fps)
+                .bitrate(5_000_000),  // 5 Mbps, adjust as needed
             AudioSettingBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             "output.mp4"
@@ -129,16 +130,17 @@ impl Capture {
         for frame in self.frame_buffer.iter() {
             let mut decompressed = Self::decompress_frame(&frame.compressed_data)?;
             Self::convert_to_bottom_up(&mut decompressed, frame.width, frame.height);
-            encoder.send_frame_buffer(&decompressed, frame.time.Duration);
+            let frame_time = TimeSpan::from(frame.timestamp);
+            encoder.send_frame_buffer(&decompressed, frame_time.Duration)?;
+        }
         
+        encoder.finish()?;
+        Ok(())
     }
-    encoder.finish()?;
-    Ok(())
-}
 
+    #[allow(unused)]
     fn upload_file(file_path: &str) -> Result<()> {
         let client = Client::new();
-        let file = File::open(file_path)?;
 
         let upload_url_response = client.post("https://videolink.brodymlarson2.workers.dev/upload")
             .header("x-secret-password", "pls-no-dos")
@@ -173,7 +175,21 @@ impl Capture {
 fn main() -> Result<()> {
     let display = Display::primary()?;
     let mut capturer = Capturer::new(display)?;
-    let mut capture = Capture::new()?;
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag_clone = stop_flag.clone();
 
+    // Set up global hotkey listener
+    thread::spawn(move || {
+        if let Err(error) = listen(move |event| {
+            if let EventType::KeyPress(Key::F2) = event.event_type {
+                println!("F2 pressed, stopping capture...");
+                stop_flag_clone.store(true, Ordering::SeqCst);
+            }
+        }) {
+            println!("Error setting up hotkey listener: {:?}", error);
+        }
+    });
+
+    let mut capture = Capture::new(60, stop_flag)?;  // Specify desired FPS here
     capture.start_scrap_cap(&mut capturer)
 }

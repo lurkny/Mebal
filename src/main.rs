@@ -14,14 +14,13 @@ use capture::Capture;
 
 fn main() -> Result<()> {
     let display = Display::primary()?;
-    let mut capturer = Capturer::new(display)?;
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
 
     setup_hotkey_listener(stop_flag_clone);
 
     let mut capture = Capture::new(60, stop_flag)?;  // Specify desired FPS here
-    capture.start_scrap_cap(&mut capturer)
+    capture.start_duplication_cap()
 }
 
 fn setup_hotkey_listener(stop_flag: Arc<AtomicBool>) {

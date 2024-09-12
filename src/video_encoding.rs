@@ -11,7 +11,7 @@ pub fn save_buffer(frame_buffer: &VecDeque<CompressedFrame>, fps: u32) -> Result
     let mut encoder = VideoEncoder::new(
         VideoSettingsBuilder::new(frame_buffer[0].width, frame_buffer[0].height)
             .frame_rate(fps)
-            .bitrate(5_000_000),  // 5 Mbps, adjust as needed
+            .bitrate(10_000_000),  // 5 Mbps, adjust as needed
         AudioSettingBuilder::default().disabled(true),
         ContainerSettingsBuilder::default(),
         "output.mp4"

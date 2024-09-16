@@ -4,7 +4,6 @@ Mebal is a high-performance screen recording solution designed to provide a stre
 
 ## Features
 
-- **High-Performance Screen Recording**: Mebal utilizes advanced technologies to capture your screen with maximum efficiency.
 - **Lightweight**: No unnecessary features, just focused on delivering high-quality recordings.
 - **MP4 Output**: All recordings are saved in MP4 format, ensuring wide compatibility and easy sharing.
 

@@ -1,26 +1,34 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
-use scrap::{Capturer, Display};
 use rdev::{listen, EventType, Key};
 use std::thread;
 
-mod capture;
+mod capture_strategy;
 mod compression;
-mod video_encoding;
+mod video_encoding_strategy;
 mod upload;
 
-use capture::Capture;
+#[cfg(target_os = "windows")]
+mod windows_capture;
+#[cfg(target_os = "windows")]
+mod windows_encoder;
+
+#[cfg(not(target_os = "windows"))]
+mod generic_capture;
+#[cfg(not(target_os = "windows"))]
+mod ffmpeg_encoder;
+
+use capture_strategy::CaptureStrategy;
 
 fn main() -> Result<()> {
-    let display = Display::primary()?;
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
 
     setup_hotkey_listener(stop_flag_clone);
 
-    let mut capture = Capture::new(60, stop_flag)?;  // Specify desired FPS here
-    capture.start_duplication_cap()
+    let mut capture_strategy = CaptureStrategy::new(60, stop_flag)?;  // Specify  FPS here
+    capture_strategy.start_capture()
 }
 
 fn setup_hotkey_listener(stop_flag: Arc<AtomicBool>) {

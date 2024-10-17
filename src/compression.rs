@@ -10,6 +10,7 @@ pub struct CompressedFrame {
     pub timestamp: Duration,
 }
 
+
 pub fn compress_frame(buffer: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = EncoderBuilder::new().level(0).favor_dec_speed(true).build(Vec::new())?;
     encoder.write_all(buffer)?;

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use anyhow::Result;
-use crate::compression::CompressedFrame;
+use crate::compression::{CompressedFrame, decompress_frame};
 
 #[cfg(target_os = "windows")]
 use crate::windows_encoder::WindowsEncoder;
@@ -32,7 +32,7 @@ impl VideoEncodingStrategy {
             #[cfg(target_os = "windows")]
             VideoEncodingStrategy::Windows(encoder) => encoder.encode_frame(frame),
             #[cfg(not(target_os = "windows"))]
-            VideoEncodingStrategy::FFmpeg(encoder) => encoder.encode_frame(frame),
+            VideoEncodingStrategy::FFmpeg(encoder) => encoder.encode_frame(&frame.compressed_data),
         }
     }
 

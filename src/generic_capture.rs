@@ -35,7 +35,7 @@ impl GenericCapture {
         let display = Display::primary()?;
         let mut capturer = Capturer::new(display)?;
         let cap_width = capturer.width();
-        let cap_height = capturer.height();
+        let cap_height = 1080;
         let frame_duration = Duration::from_secs_f64(1.0 / self.fps as f64);
         let mut next_capture_time = self.start;
 
@@ -83,13 +83,6 @@ impl GenericCapture {
             height: *height as u32,
             timestamp,
         };
-
-        // Save the decompressed frame data to disk before encoding with FFmpeg
-        let decompressed = decompress_frame(&frame_data.compressed_data)?;
-
-        // Write raw decompressed frame to disk
-        let mut file = File::options().append(true).create(true).open("raw_video.raw")?;
-        file.write_all(&decompressed)?;
         if Self::MAX_FRAME_BUFFER_SIZE <= self.frame_buffer.len() {
             self.frame_buffer.pop_front();
         }

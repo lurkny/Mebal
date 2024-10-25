@@ -1,10 +1,9 @@
 use anyhow::{Result, Context, bail};
-use std::fs::File;
-use std::io::{Write, BufReader, BufRead, BufWriter};
 use std::process::{Command, Stdio, Child};
 use std::thread;
 use std::sync::mpsc;
-use crate::compression::{CompressedFrame, decompress_frame};
+use std::io::{Write};
+use crate::compression::decompress_frame;
 
 pub struct FFmpegEncoder {
     ffmpeg_process: Child,
@@ -17,19 +16,21 @@ impl FFmpegEncoder {
     pub fn new(width: u32, height: u32, fps: u32, output_path: &str) -> Result<Self> {
         let mut ffmpeg_process = Command::new("ffmpeg")
             .args(&[
-                "-y",
-                "-f", "rawvideo",
-                "-pixel_format", "bgra",
-                "-video_size", &format!("{}x{}", width, height),
+                "-y",                                    // Overwrite output file if it exists
+                "-f", "rawvideo",                       // Input format is raw video
+                "-pixel_format", "bgra",                // Input pixel format is BGRA
+                "-video_size", &format!("{}x{}", width, 1242),
                 "-framerate", &fps.to_string(),
-                "-i", "raw_video.raw",  // Reading from the raw video file
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-crf", "23",
-                "-pix_fmt", "yuv420p",
-                output_path,
+                "-i", "-",                             // Read from stdin instead of file
+                "-c:v", "libx264",                     // Use H.264 codec
+                "-preset", "ultrafast",                // Fastest encoding preset
+                "-tune", "zerolatency",               // Optimize for low-latency
+                "-crf", "23",                         // Constant rate factor (quality)
+                "-pix_fmt", "yuv420p",                // Output pixel format
+                "-movflags", "+faststart",            // Enable fast start for web playback
+                output_path
             ])
-            .stdin(Stdio::null()) 
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -40,11 +41,11 @@ impl FFmpegEncoder {
 
         // Spawn a thread to capture FFmpeg's stderr output
         thread::spawn(move || {
+            use std::io::{BufReader, BufRead};
             let reader = BufReader::new(stderr);
             for line in reader.lines() {
                 if let Ok(line) = line {
-                    // Log each line for debugging
-                    eprintln!("FFmpeg stderr: {}", line);
+                    eprintln!("FFmpeg: {}", line);
                     error_sender.send(line).expect("Failed to send error");
                 }
             }
@@ -58,47 +59,51 @@ impl FFmpegEncoder {
         })
     }
 
-    pub fn encode_frame(&mut self, frame: &CompressedFrame) -> Result<()> {
-        // Decompress the frame
-        let decompressed = decompress_frame(&frame.compressed_data)
-            .context("Failed to decompress frame")?;
+    pub fn encode_frame(&mut self, frame_data: &[u8]) -> Result<()> {
+        // Get stdin handle for writing frame data
+        let decompressed_data = decompress_frame(frame_data)?;
 
-        // Write the decompressed frame data to a file (appending to raw_video.raw)
-        let mut file = File::options().append(true).create(true).open("raw_video.raw")
-            .context("Failed to open raw video file for writing")?;
-        file.write_all(&decompressed)
-            .context("Failed to write raw frame data to file")?;
+        let stdin = self.ffmpeg_process.stdin.as_mut()
+            .context("Failed to get stdin handle")?;
+
+        // Write the frame directly to FFmpeg's stdin
+        stdin.write_all(&decompressed_data)
+            .context("Failed to write frame data to FFmpeg")?;
 
         self.frame_count += 1;
 
         // Check for any FFmpeg errors
         if let Ok(error) = self.error_receiver.try_recv() {
-            bail!("FFmpeg error: {}", error);
+            if error.contains("Error") || error.contains("error") {
+                bail!("FFmpeg error: {}", error);
+            }
         }
 
         Ok(())
     }
 
     pub fn finish(mut self) -> Result<()> {
+        // Close stdin to signal end of input
+        drop(self.ffmpeg_process.stdin.take());
+
         // Wait for the FFmpeg process to finish
         let status = self.ffmpeg_process.wait()
             .context("Failed to wait for FFmpeg process to exit")?;
 
-        // Collect any remaining error messages from the error receiver
+        // Collect any remaining error messages
         let mut error_messages = Vec::new();
         while let Ok(error) = self.error_receiver.try_recv() {
             error_messages.push(error);
         }
 
-        // Check if FFmpeg exited successfully
         if status.success() {
-            println!("Video encoding completed successfully.");
+            println!("Video encoding completed successfully");
             println!("Total frames: {}", self.frame_count);
             println!("Duration: {:.2} seconds", self.frame_count as f64 / self.fps as f64);
             Ok(())
         } else {
             let error_log = error_messages.join("\n");
-            bail!("FFmpeg exited with status {}. Errors:\n{}", status, error_log);
+            bail!("FFmpeg exited with status {}. Errors:\n{}", status, error_log)
         }
     }
 }

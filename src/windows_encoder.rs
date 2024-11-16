@@ -3,7 +3,7 @@ use windows_capture::encoder::{
     AudioSettingBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
 };
 use windows::Foundation::TimeSpan;
-
+use std::collections::VecDeque;
 use crate::compression::{CompressedFrame, decompress_frame, convert_to_bottom_up};
 
 pub struct WindowsEncoder {
@@ -22,6 +22,17 @@ impl WindowsEncoder {
         )?;
 
         Ok(Self { encoder })
+    }
+    pub fn save_buffer(mut self, frame_buffer: &VecDeque<CompressedFrame>, fps: u32) -> Result<()> {
+        for frame in frame_buffer {
+            let mut decompressed = decompress_frame(&frame.compressed_data)?;
+            convert_to_bottom_up(&mut decompressed, frame.width, frame.height);
+            let frame_time = TimeSpan::from(frame.timestamp);
+            self.encoder.send_frame_buffer(&decompressed, frame_time.Duration)?;
+        }
+
+        self.finish()?;
+        Ok(())
     }
 
     pub fn encode_frame(&mut self, frame: &CompressedFrame) -> Result<()> {

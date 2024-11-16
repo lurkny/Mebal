@@ -10,9 +10,9 @@ use std::{
 use win_desktop_duplication::*;
 use win_desktop_duplication::{tex_reader::*, devices::*};
 use anyhow::Result;
+use crate::video_encoding_strategy::save_buffer;
 use win_desktop_duplication::{ DesktopDuplicationApi, tex_reader::TextureReader, devices::*};
 use crate::compression::{CompressedFrame, compress_frame};
-use crate::windows_encoder::save_buffer;
 
 
 

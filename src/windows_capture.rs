@@ -8,13 +8,9 @@ use std::{
     time::{Duration, Instant},
 };
 use win_desktop_duplication::*;
-use win_desktop_duplication::{tex_reader::*, devices::*};
 use anyhow::Result;
 use crate::video_encoding_strategy::save_buffer;
-use win_desktop_duplication::{ DesktopDuplicationApi, tex_reader::TextureReader, devices::*};
 use crate::compression::{CompressedFrame, compress_frame};
-
-
 
 pub struct WindowsCapture {
     frame_buffer: VecDeque<CompressedFrame>,
@@ -23,13 +19,12 @@ pub struct WindowsCapture {
     stop_flag: Arc<AtomicBool>,
 }
 
-
-
 impl WindowsCapture {
-    const MAX_FRAME_BUFFER_SIZE: usize = (60 * 10) as usize;
+    const MAX_FRAME_BUFFER_SIZE: usize = 60 * 10;
+
     pub fn new(fps: u32, stop_flag: Arc<AtomicBool>) -> Result<Self> {
         Ok(Self {
-            frame_buffer: VecDeque::with_capacity(fps as usize * 10),
+            frame_buffer: VecDeque::with_capacity(Self::MAX_FRAME_BUFFER_SIZE),
             start: Instant::now(),
             fps,
             stop_flag,

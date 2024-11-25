@@ -14,12 +14,15 @@ pub struct FFmpegEncoder {
 
 impl FFmpegEncoder {
     pub fn new(width: u32, height: u32, fps: u32, output_path: &str) -> Result<Self> {
+        // Round height up to nearest even number
+        let adjusted_height = (height + 1) & !1;
+        
         let mut ffmpeg_process = Command::new("ffmpeg")
             .args(&[
                 "-y",                                    // Overwrite output file if it exists
                 "-f", "rawvideo",                       // Input format is raw video
                 "-pixel_format", "bgra",                // Input pixel format is BGRA
-                "-video_size", &format!("{}x{}", width, 1242),
+                "-video_size", &format!("{}x{}", width, adjusted_height),
                 "-framerate", &fps.to_string(),
                 "-i", "-",                             // Read from stdin instead of file
                 "-c:v", "libx264",                     // Use H.264 codec

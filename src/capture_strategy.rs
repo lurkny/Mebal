@@ -22,7 +22,11 @@ impl CaptureStrategy {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            Ok(CaptureStrategy::Generic(GenericCapture::new(fps, stop_flag)?))
+            Ok(CaptureStrategy::Generic(GenericCapture::new(
+                fps, 
+                stop_flag,
+                String::from("output.mp4")
+            )?))
         }
     }
 

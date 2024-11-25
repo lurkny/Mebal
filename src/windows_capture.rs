@@ -7,7 +7,8 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use win_desktop_duplication::*;
+use win_desktop_duplication::{ DesktopDuplicationApi, tex_reader::TextureReader, devices::*, set_process_dpi_awareness, co_init };
+use win_desktop_duplication::{tex_reader::*, devices::*};
 use anyhow::Result;
 use crate::video_encoding_strategy::save_buffer;
 use crate::compression::{CompressedFrame, compress_frame};

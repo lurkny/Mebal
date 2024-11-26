@@ -2,6 +2,10 @@
 name = "Mebal"
 version = "0.1.0"
 edition = "2021"
+description = "An OS independent replay buffer solution."
+license = "MIT"
+authors = ["Brody Larson <brody@larson.dev>"]
+repository = "https://github.com/lurkny/Mebal"
 
 [dependencies]
 anyhow = "1.0"

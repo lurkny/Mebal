@@ -1,36 +1,72 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{self, Write};
 use anyhow::Result;
+mod osx;
+mod utils;
+use osx::osx_capture::{find_display_to_capture, prepare_ffmpeg_encoder};
+use std::sync::atomic::{AtomicBool, Ordering};
 use rdev::{listen, EventType, Key};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
+use utils::storage::FrameBuffer;
+use std::process::{Command, Stdio};
 
-mod capture_strategy;
-mod compression;
-mod video_encoding_strategy;
-mod upload;
 
-#[cfg(target_os = "windows")]
-mod windows_capture;
-#[cfg(target_os = "windows")]
-mod windows_encoder;
 
-#[cfg(not(target_os = "windows"))]
-mod generic_capture;
-#[cfg(not(target_os = "windows"))]
-mod ffmpeg_encoder;
+fn get_user_device_selection() -> Result<(String, String)> {
+    // List available devices
+    find_display_to_capture()?;
+    
+    print!("\nEnter video device ID: ");
+    io::stdout().flush()?;
+    let mut video_id = String::new();
+    io::stdin().read_line(&mut video_id)?;
+    let video_id = video_id.trim().to_string();
 
-use capture_strategy::CaptureStrategy;
+    print!("Enter audio device ID: ");
+    io::stdout().flush()?;
+    let mut audio_id = String::new();
+    io::stdin().read_line(&mut audio_id)?;
+    let audio_id = audio_id.trim().to_string();
 
-fn main() -> Result<()> {
-    let stop_flag = Arc::new(AtomicBool::new(false));
-    let stop_flag_clone = stop_flag.clone();
-
-    setup_hotkey_listener(stop_flag_clone);
-
-    let mut capture_strategy = CaptureStrategy::new(60, stop_flag)?;  // Specify  FPS here
-    capture_strategy.start_capture()
+    Ok((video_id, audio_id))
 }
 
+fn main() -> Result<()> {
+    println!("Screen Recording Setup");
+    println!("--------------------");
+    
+    let ids = get_user_device_selection()?;
+    println!("\nSelected devices:");
+    println!("Video device: {}", ids.0);
+    println!("Audio device: {}", ids.1);
+
+    // TODO: Pass these IDs to your capture implementation
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    setup_hotkey_listener(stop_flag.clone());
+
+    let frame_buffer = Arc::new(Mutex::new(FrameBuffer::new(1920, 1080, 10, 30)));
+   let mut command =  prepare_ffmpeg_encoder(ids, "fuck.mp4")?;
+
+   println!("Recording started. Press F2 to stop...");
+
+    // Wait until stop_flag is set
+    while !stop_flag.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    let mut kill = Command::new("kill")
+    // TODO: replace `TERM` to signal you want.
+    .args(["-s", "TERM", &command.id().to_string()])
+    .spawn()?;
+    kill.wait()?;
+
+    println!("Recording stopped");
+
+    
+    Ok(())
+}
 fn setup_hotkey_listener(stop_flag: Arc<AtomicBool>) {
     thread::spawn(move || {
         if let Err(error) = listen(move |event| {

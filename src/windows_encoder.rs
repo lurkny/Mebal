@@ -1,6 +1,6 @@
 use anyhow::Result;
 use windows_capture::encoder::{
-    AudioSettingBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
+    AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder,
 };
 use windows::Foundation::TimeSpan;
 use std::collections::VecDeque;
@@ -16,7 +16,7 @@ impl WindowsEncoder {
             VideoSettingsBuilder::new(width, height)
                 .frame_rate(fps)
                 .bitrate(10_000_000),  // 10 Mbps, adjust as needed
-            AudioSettingBuilder::default().disabled(true),
+            AudioSettingsBuilder::default().disabled(true),
             ContainerSettingsBuilder::default(),
             output_path
         )?;

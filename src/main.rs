@@ -41,7 +41,7 @@ fn setup_hotkey_listener(stop_flag: Arc<AtomicBool>) {
                 stop_flag.store(true, Ordering::SeqCst);
             }
         }) {
-            println!("Error setting up hotkey listener: {:?}", error);
+            println!("Error setting up hotkey listener: {error:?}");
         }
     });
 }

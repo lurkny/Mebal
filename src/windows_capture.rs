@@ -7,8 +7,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use win_desktop_duplication::{ DesktopDuplicationApi, tex_reader::TextureReader, devices::*, set_process_dpi_awareness, co_init };
-use win_desktop_duplication::{tex_reader::*, devices::*};
+use win_desktop_duplication::{ DesktopDuplicationApi, tex_reader::TextureReader, devices::AdapterFactory, set_process_dpi_awareness, co_init };
 use anyhow::Result;
 use crate::video_encoding_strategy::save_buffer;
 use crate::compression::{CompressedFrame, compress_frame};
@@ -51,7 +50,7 @@ impl WindowsCapture {
         // Create a buffer for storing image data
         let mut pic_data: Vec<u8> = vec![0; 0];
 
-        let frame_duration = Duration::from_secs_f64(1.0 / self.fps as f64);
+        let frame_duration = Duration::from_secs_f64(1.0 / f64::from(self.fps));
         let mut next_capture_time = self.start;
 
         loop {

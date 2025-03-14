@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use anyhow::Result;
-use crate::compression::{CompressedFrame, decompress_frame};
+use crate::compression::CompressedFrame;
 
 #[cfg(target_os = "windows")]
 use crate::windows_encoder::WindowsEncoder;

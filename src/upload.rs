@@ -17,7 +17,7 @@ pub fn upload_file(file_path: &str) -> Result<()> {
     let upload_url = json["result"]["uploadURL"].as_str()
         .ok_or_else(|| anyhow::anyhow!("Failed to extract uploadURL from response"))?;
 
-    println!("Got upload URL: {}", upload_url);
+    println!("Got upload URL: {upload_url}");
 
     let form = reqwest::blocking::multipart::Form::new()
         .file("file", file_path)?;

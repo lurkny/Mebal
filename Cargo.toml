@@ -1,6 +1,6 @@
 [package]
 name = "Mebal"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "An OS independent replay buffer solution."
 license = "MIT"
@@ -27,4 +27,8 @@ scrap = "0.5"
 tempfile = "3.12.0"
 
 [profile.release]
-debug = true
+lto = true           # Full LTO for cross-crate optimization
+opt-level = 3        # Aggressive optimizations
+codegen-units = 1    # Maximum optimization potential
+strip = true         # Remove debug symbols
+panic = "abort"      # Smaller, faster panic handling

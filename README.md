@@ -5,6 +5,8 @@ Mebal is a high-performance screen recording solution designed to provide a stre
 ## Note
 **Main Branch only supports Windows targets, if you want to use another platform, switch to the lurk-mpsup branch.**
 
+# DOES NOT SUPPORT HDR
+
 ## Features
 
 - **Lightweight**: No unnecessary features, just focused on delivering high-quality recordings.

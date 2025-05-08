@@ -1,6 +1,6 @@
 [package]
 name = "Mebal"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "An OS independent replay buffer solution."
 license = "MIT"
@@ -17,7 +17,7 @@ rdev = "0.5.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 win_desktop_duplication = "0.10.11"
-windows = "0.58.0"
+windows = { version = "0.58.0", features = ["Foundation"] }
 windows-capture = "1.3.2"
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]

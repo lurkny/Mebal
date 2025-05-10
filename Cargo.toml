@@ -16,6 +16,8 @@ members = [
 [dependencies]
 anyhow = "1.0"
 dioxus = {version = "0.6.3", features = ["desktop"]}
+recorder = { path = "crates/recorder" }
+rdev = "0.5"
 
 
 [target.'cfg(target_os = "windows")'.dependencies]

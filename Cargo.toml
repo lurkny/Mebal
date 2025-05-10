@@ -8,6 +8,11 @@ authors = ["Brody Larson <brody@larson.dev>"]
 repository = "https://github.com/lurkny/Mebal"
 
 
+[workspace]
+members = [
+    "crates/recorder"
+]
+
 [dependencies]
 anyhow = "1.0"
 dioxus = {version = "0.6.3", features = ["desktop"]}

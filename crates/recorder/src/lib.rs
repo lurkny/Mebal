@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+
+use log::{info, debug, warn, error};
+
 pub mod recorder;
 use recorder::Recorder;
 use std::process::{Child, Command, Stdio};
@@ -65,7 +69,7 @@ impl Recorder for WindowsRecorder {
             "-segment_time",
             &self.buffer_secs.to_string(),
             "-segment_wrap",
-            "2",
+            "1",
             "-reset_timestamps",
             "1",
             &self.temp_pattern,
@@ -80,37 +84,41 @@ impl Recorder for WindowsRecorder {
 
     fn stop(&mut self) {
         if let Some(mut child) = self.child.take() {
-            eprintln!("[recorder] stop(): child present, stdin piped: {}", child.stdin.is_some());
+            debug!("[recorder] stop(): child present, stdin piped: {}", child.stdin.is_some());
             // attempt a graceful shutdown by sending 'q'
             if let Some(mut stdin) = child.stdin.take() {
                 match stdin.write_all(b"q\n") {
-                    Ok(_) => eprintln!("[recorder] sent 'q' to ffmpeg"),
-                    Err(e) => eprintln!("[recorder] failed to send 'q': {:?}", e),
+                    Ok(_) => debug!("[recorder] sent 'q' to ffmpeg"),
+                    Err(e) => error!("[recorder] failed to send 'q': {:?}", e),
                 }
             } else {
-                eprintln!("[recorder] no stdin to write to");
+                warn!("[recorder] no stdin to write to");
             }
-            // give ffmpeg a moment to exit gracefully
+            
             std::thread::sleep(std::time::Duration::from_millis(500));
-            // if still running, kill it
+
+            // Forefully kill if not exited
             match child.try_wait() {
-                Ok(Some(status)) => eprintln!("[recorder] ffmpeg exited gracefully: {:?}", status),
+                Ok(Some(status)) => info!("[recorder] ffmpeg exited gracefully: {:?}", status),
                 Ok(None) => {
-                    eprintln!("[recorder] ffmpeg still running; killing now");
+                    warn!("[recorder] ffmpeg still running; killing now");
                     let _ = child.kill();
                     let _ = child.wait();
                 }
-                Err(e) => eprintln!("[recorder] try_wait() failed: {:?}", e),
+                Err(e) => error!("[recorder] try_wait() failed: {:?}", e),
             }
         } else {
-            eprintln!("[recorder] stop(): no child to stop");
+            warn!("[recorder] stop(): no child to stop");
         }
     }
 
     fn save(&self, path: &str) {
         // copy the rotated buffer file to final output
         let buffer_file = self.temp_pattern.replace("%03d", "000");
-        let _ = std::fs::copy(buffer_file, path);
+        match std::fs::copy(buffer_file, path) {
+            Ok(_) => info!("[recorder] buffer saved to {}", path),
+            Err(e) => error!("[recorder] failed to save buffer to {}: {:?}", path, e),
+        }
     }
 }
 
@@ -291,8 +299,4 @@ pub fn create_recorder(
     {
         Box::new(OSXRecorder::new(width, height, fps, buffer_secs, output))
     }
-}
-
-fn start_recording() {
-    // Detect OS and create a recorder trait object
 }

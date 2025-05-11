@@ -1,21 +1,22 @@
-use std::sync::Arc;
 use std::thread;
 
-use dioxus::prelude::*;
-use rdev::{listen, ListenError, EventType, Key};
+use dioxus::{desktop::{Config, WindowBuilder}, prelude::*};
+use rdev::{listen, EventType, Key};
 use recorder::create_recorder;
+use env_logger;
+use log::{info, debug};
 
 static CSS: Asset = asset!("/assets/main.css");
 
 #[derive(PartialEq, Debug, Clone)]
-struct Config {
+struct RecordingConfig {
     resolution: Signal<String>,
     fps: Signal<String>,
     output_path: Signal<String>,
     buffer_secs: Signal<String>,
     listener_started: Signal<bool>,
 }
-impl Config {
+impl RecordingConfig {
     fn new(
         resolution: Signal<String>,
         fps: Signal<String>,
@@ -34,11 +35,24 @@ impl Config {
 }
 
 fn main() {
-    launch(app);
+    env_logger::init();
+    
+
+    let d_cfg = Config::new().with_window(
+        WindowBuilder::new()
+            .with_title("Mebal")
+            .with_decorations(true)
+    )
+    .with_background_color((255, 255, 255, 255)) // White background
+    .with_disable_context_menu(true);
+
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(d_cfg)
+        .launch(app);
 }
 
 pub fn app() -> Element {
-    let _config = use_context_provider( || Config::new(
+    let _config = use_context_provider( || RecordingConfig::new(
         Signal::new("1920x1080".to_string()),
         Signal::new("30".to_string()),
         Signal::new("/path/to/output.mp4".to_string()),
@@ -59,7 +73,7 @@ pub fn app() -> Element {
 
 #[component]
 fn ResolutionInput() -> Element {
-    let mut res = use_context::<Config>().resolution;
+    let mut res = use_context::<RecordingConfig>().resolution;
     rsx! {
         div { class: "form-group",
             label { "Resolution" }
@@ -74,7 +88,7 @@ fn ResolutionInput() -> Element {
 
 #[component]
 fn FpsInput() -> Element {
-    let mut fps = use_context::<Config>().fps;
+    let mut fps = use_context::<RecordingConfig>().fps;
     rsx! {
         div { class: "form-group",
             label { "FPS" }
@@ -89,7 +103,7 @@ fn FpsInput() -> Element {
 
 #[component]
 fn OutputPathInput() -> Element {
-    let mut output_path = use_context::<Config>().output_path;
+    let mut output_path = use_context::<RecordingConfig>().output_path;
     rsx! {
         div { class: "form-group",
             label { "Output Path" }
@@ -104,7 +118,7 @@ fn OutputPathInput() -> Element {
 
 #[component]
 fn BufferSecondsInput() -> Element {
-    let mut buffer_secs = use_context::<Config>().buffer_secs;
+    let mut buffer_secs = use_context::<RecordingConfig>().buffer_secs;
     rsx! {
         div { class: "form-group",
             label { "Buffer Seconds" }
@@ -119,11 +133,11 @@ fn BufferSecondsInput() -> Element {
 
 #[component]
 fn StartBufferButton() -> Element {
-    let mut listener_started = use_context::<Config>().listener_started;
-    let resolution_sig = use_context::<Config>().resolution;
-    let fps_sig = use_context::<Config>().fps;
-    let output_path_sig = use_context::<Config>().output_path;
-    let buffer_secs_sig = use_context::<Config>().buffer_secs;
+    let mut listener_started = use_context::<RecordingConfig>().listener_started;
+    let resolution_sig = use_context::<RecordingConfig>().resolution;
+    let fps_sig = use_context::<RecordingConfig>().fps;
+    let output_path_sig = use_context::<RecordingConfig>().output_path;
+    let buffer_secs_sig = use_context::<RecordingConfig>().buffer_secs;
     rsx! {
         button {
             onclick: move |_| {
@@ -157,7 +171,7 @@ fn start_recording(resolution: &str, fps: &str, output_path: &str, buffer_secs: 
         let buffer_secs = buffer_secs.parse::<u32>().unwrap();
 
         // create & start ffmpeg recorder
-        eprintln!("[recorder] Starting: {}x{} @ {}fps, {}s buffer → {}", width, height, fps, buffer_secs, output_path);
+        info!("[recorder] Starting: {}x{} @ {}fps, {}s buffer → {}", width, height, fps, buffer_secs, output_path);
         let mut recorder = create_recorder(width, height, fps, buffer_secs, output_path.clone());
         recorder.start();
 
@@ -165,17 +179,17 @@ fn start_recording(resolution: &str, fps: &str, output_path: &str, buffer_secs: 
         let result = listen(move |event| {
             // debug: log every key press
             if let EventType::KeyPress(key) = event.event_type {
-                eprintln!("[recorder] key press event: {:?}", key);
+                debug!("[recorder] key press event: {:?}", key);
             }
             if let EventType::KeyPress(Key::F2) = event.event_type {
-                eprintln!("[recorder] F2 pressed: stopping");
+                info!("[recorder] F2 pressed: stopping");
                 recorder.stop();
                 recorder.save(&output_path);
-                eprintln!("[recorder] Saved output to {}", output_path);
+                info!("[recorder] Saved output to {}", output_path);
                 return;
             }
             return;
         });
-        eprintln!("[recorder] Listener exited with: {:?}", result);
+        debug!("[recorder] Listener exited with: {:?}", result);
     });
 }

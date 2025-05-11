@@ -18,16 +18,15 @@ pub struct WindowsRecorder {
     width: u32,
     height: u32,
     fps: u32,
-    buffer_secs: u32, // added buffer length in seconds
+    buffer_secs: u32, 
     output: String,
-    temp_pattern: String, // pattern for rotating buffer files
+    temp_pattern: String,
     child: Option<Child>,
 }
 
 #[cfg(target_os = "windows")]
 impl WindowsRecorder {
     pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        // temp_pattern in temp dir
         let temp_pattern = std::env::temp_dir()
             .join("replay_buffer_%03d.mp4")
             .to_string_lossy()
@@ -94,7 +93,7 @@ impl Recorder for WindowsRecorder {
             } else {
                 warn!("[recorder] no stdin to write to");
             }
-            
+
             std::thread::sleep(std::time::Duration::from_millis(500));
 
             // Forefully kill if not exited
@@ -203,7 +202,7 @@ struct OSXRecorder {
     width: u32,
     height: u32,
     fps: u32,
-    buffer_secs: u32, // added buffer length in seconds
+    buffer_secs: u32,
     output: String,
     temp_pattern: String,
     child: Option<Child>,

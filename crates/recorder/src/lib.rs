@@ -1,273 +1,18 @@
 #![allow(dead_code)]
 
-use log::{info, debug, warn, error};
+use std::{path::PathBuf, process::Command};
 
+pub mod linux_recorder;
+pub mod osx_recorder;
 pub mod recorder;
+pub mod windows_recorder;
+
+use anyhow::Result;
 use recorder::Recorder;
-use std::process::{Child, Command, Stdio};
-use std::io::Write;
 
 fn check_ffmpeg_installed() {
     if Command::new("ffmpeg").arg("-version").output().is_err() {
         panic!("ffmpeg not found. Please install ffmpeg and ensure it is available in your PATH.");
-    }
-}
-
-#[cfg(target_os = "windows")]
-pub struct WindowsRecorder {
-    width: u32,
-    height: u32,
-    fps: u32,
-    buffer_secs: u32, 
-    output: String,
-    temp_pattern: String,
-    child: Option<Child>,
-}
-
-#[cfg(target_os = "windows")]
-impl WindowsRecorder {
-    pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        let temp_pattern = std::env::temp_dir()
-            .join("replay_buffer_%03d.mp4")
-            .to_string_lossy()
-            .into_owned();
-        Self {
-            width,
-            height,
-            fps,
-            buffer_secs,
-            output,
-            temp_pattern,
-            child: None,
-        }
-    }
-}
-
-#[cfg(target_os = "windows")]
-impl Recorder for WindowsRecorder {
-    fn start(&mut self) {
-        check_ffmpeg_installed();
-        let args = [
-            "-y",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            &self.fps.to_string(),
-            "-video_size",
-            &format!("{}x{}", self.width, self.height),
-            "-i",
-            "desktop",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-f",
-            "segment",
-            "-segment_time",
-            &self.buffer_secs.to_string(),
-            "-segment_wrap",
-            "1",
-            "-reset_timestamps",
-            "1",
-            &self.temp_pattern,
-        ];
-        // spawn ffmpeg with piped stdin so we can send 'q' to terminate gracefully
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args)
-            .stdin(Stdio::piped());
-        let child = cmd.spawn().expect("Failed to start ffmpeg");
-        self.child = Some(child);
-    }
-
-    fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            debug!("[recorder] stop(): child present, stdin piped: {}", child.stdin.is_some());
-            // attempt a graceful shutdown by sending 'q'
-            if let Some(mut stdin) = child.stdin.take() {
-                match stdin.write_all(b"q\n") {
-                    Ok(_) => debug!("[recorder] sent 'q' to ffmpeg"),
-                    Err(e) => error!("[recorder] failed to send 'q': {:?}", e),
-                }
-            } else {
-                warn!("[recorder] no stdin to write to");
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(500));
-
-            // Forefully kill if not exited
-            match child.try_wait() {
-                Ok(Some(status)) => info!("[recorder] ffmpeg exited gracefully: {:?}", status),
-                Ok(None) => {
-                    warn!("[recorder] ffmpeg still running; killing now");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                Err(e) => error!("[recorder] try_wait() failed: {:?}", e),
-            }
-        } else {
-            warn!("[recorder] stop(): no child to stop");
-        }
-    }
-
-    fn save(&self, path: &str) {
-        // copy the rotated buffer file to final output
-        let buffer_file = self.temp_pattern.replace("%03d", "000");
-        match std::fs::copy(buffer_file, path) {
-            Ok(_) => info!("[recorder] buffer saved to {}", path),
-            Err(e) => error!("[recorder] failed to save buffer to {}: {:?}", path, e),
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub struct LinuxRecorder {
-    width: u32,
-    height: u32,
-    fps: u32,
-    buffer_secs: u32, // added buffer length in seconds
-    output: String,
-    temp_pattern: String,
-    child: Option<Child>,
-}
-
-#[cfg(target_os = "linux")]
-impl LinuxRecorder {
-    pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        let temp_pattern = std::env::temp_dir()
-            .join("replay_buffer_%03d.mp4")
-            .to_string_lossy()
-            .into_owned();
-        Self {
-            width,
-            height,
-            fps,
-            buffer_secs,
-            output,
-            temp_pattern,
-            child: None,
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Recorder for LinuxRecorder {
-    fn start(&mut self) {
-        check_ffmpeg_installed();
-        let args = [
-            "-y",
-            "-f",
-            "x11grab",
-            "-framerate",
-            &self.fps.to_string(),
-            "-video_size",
-            &format!("{}x{}", self.width, self.height),
-            "-i",
-            ":0.0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-f",
-            "segment",
-            "-segment_time",
-            &self.buffer_secs.to_string(),
-            "-segment_wrap",
-            "1",
-            "-reset_timestamps",
-            "1",
-            &self.temp_pattern,
-        ];
-        let cmd = Command::new("ffmpeg").args(&args).spawn();
-        self.child = cmd.ok();
-    }
-
-    fn stop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    fn save(&self, path: &str) {
-        let buffer_file = self.temp_pattern.replace("%03d", "000");
-        let _ = std::fs::copy(buffer_file, path);
-    }
-}
-
-struct OSXRecorder {
-    width: u32,
-    height: u32,
-    fps: u32,
-    buffer_secs: u32,
-    output: String,
-    temp_pattern: String,
-    child: Option<Child>,
-}
-impl OSXRecorder {
-    pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        let temp_pattern = std::env::temp_dir()
-            .join("replay_buffer_%03d.mp4")
-            .to_string_lossy()
-            .into_owned();
-        Self {
-            width,
-            height,
-            fps,
-            buffer_secs,
-            output,
-            temp_pattern,
-            child: None,
-        }
-    }
-}
-
-impl Recorder for OSXRecorder {
-    fn start(&mut self) {
-        check_ffmpeg_installed();
-        let args = [
-            "-y",
-            "-f",
-            "avfoundation",
-            "-framerate",
-            &self.fps.to_string(),
-            "-video_size",
-            &format!("{}x{}", self.width, self.height),
-            "-i",
-            "0",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-f",
-            "segment",
-            "-segment_time",
-            &self.buffer_secs.to_string(),
-            "-segment_wrap",
-            "1",
-            "-reset_timestamps",
-            "1",
-            &self.temp_pattern,
-        ];
-        let cmd = Command::new("ffmpeg").args(&args).spawn();
-        self.child = cmd.ok();
-    }
-
-    fn stop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-
-    fn save(&self, path: &str) {
-        let buffer_file = self.temp_pattern.replace("%03d", "000");
-        let _ = std::fs::copy(buffer_file, path);
     }
 }
 
@@ -281,7 +26,7 @@ pub fn create_recorder(
 ) -> Box<dyn Recorder> {
     #[cfg(target_os = "windows")]
     {
-        Box::new(WindowsRecorder::new(
+        Box::new(windows_recorder::WindowsRecorder::new(
             width,
             height,
             fps,
@@ -291,11 +36,76 @@ pub fn create_recorder(
     }
     #[cfg(target_os = "linux")]
     {
-        Box::new(LinuxRecorder::new(width, height, fps, buffer_secs, output))
+        Box::new(linux_recorder::LinuxRecorder::new(
+            width,
+            height,
+            fps,
+            buffer_secs,
+            output,
+        ))
     }
 
     #[cfg(target_os = "macos")]
     {
-        Box::new(OSXRecorder::new(width, height, fps, buffer_secs, output))
+        Box::new(osx_recorder::OsxRecorder::new(
+            width,
+            height,
+            fps,
+            buffer_secs,
+            output,
+        ))
     }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        panic!("Unsupported OS for recording");
+    }
+}
+
+pub fn collect_segments() -> Result<PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(std::env::temp_dir())?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("replay_buffer_")
+        })
+        .collect();
+
+    entries.sort_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
+
+    let list_path = std::env::temp_dir().join("list.txt");
+    let mut list_file = std::fs::File::create(&list_path)?;
+
+    for entry in entries {
+        let line = format!("file '{}'\n", entry.path().display());
+        use std::io::Write;
+        list_file.write_all(line.as_bytes())?;
+    }
+
+    Ok(list_path)
+}
+
+fn assemble_segments(list_path: &PathBuf, final_output_path: &str) -> Result<()> {
+    let output_path = PathBuf::from(final_output_path); // Use the final_output_path argument
+    let output_dir = output_path.parent().unwrap();
+    std::fs::create_dir_all(output_dir)?;
+
+    let args = [
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        list_path.to_str().unwrap(),
+        "-c",
+        "copy",
+        &output_path.to_str().unwrap(),
+    ];
+
+    Command::new("ffmpeg")
+        .args(&args)
+        .output()?;
+
+    Ok(())
 }

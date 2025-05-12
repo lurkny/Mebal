@@ -1,7 +1,7 @@
 body {
     margin: 0;
     padding: 0;
-    background: linear-gradient(135deg, #2e1a47, #6a0dad);
+    background: linear-gradient(135deg, #2e1a47, #a5582c);
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     color: #f5f5f5;
 }
@@ -45,7 +45,7 @@ body {
 .button {
     width: 100%;
     padding: 0.75rem;
-    background-color: #7c3fbf;
+    background-color: #7e38c8;
     border: none;
     border-radius: 5px;
     color: #fff;

@@ -11,7 +11,7 @@ repository = "https://github.com/lurkny/Mebal"
 [workspace]
 members = [
     "crates/recorder"
-]
+, "crates/storage"]
 
 [dependencies]
 anyhow = "1.0"

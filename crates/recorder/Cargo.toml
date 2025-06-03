@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.98"
+ffmpeg-next = "7.1.0"
 log = "0.4"

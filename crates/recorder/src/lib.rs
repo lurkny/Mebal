@@ -61,7 +61,9 @@ pub fn create_recorder(
     }
 }
 
-pub fn collect_segments() -> Result<PathBuf> {
+pub fn collect_segments(buffer_secs: &u32) -> Result<PathBuf> {
+
+
     let mut entries: Vec<_> = std::fs::read_dir(std::env::temp_dir())?
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -86,7 +88,7 @@ pub fn collect_segments() -> Result<PathBuf> {
 }
 
 fn assemble_segments(list_path: &PathBuf, final_output_path: &str) -> Result<()> {
-    let output_path = PathBuf::from(final_output_path); // Use the final_output_path argument
+    let output_path = PathBuf::from(final_output_path);
     let output_dir = output_path.parent().unwrap();
     std::fs::create_dir_all(output_dir)?;
 

@@ -130,7 +130,7 @@ impl Recorder for WindowsRecorder {
 
     fn save(&self, final_output_path: &str) {
         info!("[recorder] Attempting to save buffer to {}", final_output_path);
-        match super::collect_segments() {
+        match super::collect_segments(&self.buffer_secs) { // Pass buffer_secs
             Ok(list_path) => {
                 info!("[recorder] Collected segments into: {:?}", list_path);
                 match super::assemble_segments(&list_path, final_output_path) {

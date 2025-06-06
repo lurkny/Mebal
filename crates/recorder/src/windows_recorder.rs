@@ -1,8 +1,12 @@
+use async_trait::async_trait;
 use log::{debug, error, info, warn};
-use std::io::Write;
-use std::process::{Child, Command, Stdio};
+use std::process::Stdio;
+use std::sync::Arc;
+use storage::{H264Parser, ReplayBuffer};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
 
-use super::check_ffmpeg_installed;
 use super::recorder::Recorder;
 
 pub struct WindowsRecorder {
@@ -11,55 +15,41 @@ pub struct WindowsRecorder {
     fps: u32,
     buffer_secs: u32,
     output: String,
-    temp_pattern: String,
     child: Option<Child>,
+    replay_buffer: Arc<ReplayBuffer>,
+    stop_signal: Arc<Mutex<bool>>,
 }
 
-impl WindowsRecorder {
-    pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        let temp_pattern = std::env::temp_dir()
-            .join("replay_buffer_%03d.mp4")
-            .to_string_lossy()
-            .into_owned();
+#[async_trait]
+impl Recorder for WindowsRecorder {
+    fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
+        // Calculate buffer size: assume ~2 Mbps bitrate for 1080p
+        let estimated_mbps = match (width, height) {
+            (1920, 1080) => 2,
+            (1280, 720) => 1,
+            _ => 3, // Conservative estimate for higher resolutions
+        };
+
+        let max_size_mb = estimated_mbps * buffer_secs * 60 / 8; // Convert to MB
+        let replay_buffer = Arc::new(ReplayBuffer::new(buffer_secs, max_size_mb as usize));
+
         Self {
             width,
             height,
             fps,
             buffer_secs,
             output,
-            temp_pattern,
             child: None,
+            replay_buffer,
+            stop_signal: Arc::new(Mutex::new(false)),
         }
     }
 
-    fn cleanup_temp_files(&self) {
-        info!("[recorder] Cleaning up temporary segment files...");
-        let temp_dir = std::env::temp_dir();
-        match std::fs::read_dir(temp_dir) {
-            Ok(entries) => {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let file_name = entry.file_name().to_string_lossy().into_owned();
-                    if file_name.starts_with("replay_buffer_") && file_name.ends_with(".mp4") {
-                        if let Err(e) = std::fs::remove_file(entry.path()) {
-                            warn!("[recorder] Failed to remove temp file {:?}: {:?}", entry.path(), e);
-                        } else {
-                            debug!("[recorder] Removed temp file {:?}", entry.path());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("[recorder] Failed to read temp directory for cleanup: {:?}", e);
-            }
-        }
-    }
-}
+    async fn start(&mut self) {
+        super::check_ffmpeg_installed();
 
-impl Recorder for WindowsRecorder {
-    fn start(&mut self) {
-        check_ffmpeg_installed();
-        // Ensure previous temp files are cleaned up before starting a new recording session
-        self.cleanup_temp_files();
+        // Reset stop signal
+        *self.stop_signal.lock().await = false;
 
         let args = [
             "-y",
@@ -77,47 +67,108 @@ impl Recorder for WindowsRecorder {
             "ultrafast",
             "-tune",
             "zerolatency",
+            "-profile:v",
+            "baseline", // Ensure H.264 compatibility
+            "-g",
+            "30", // Keyframe every 30 frames (1 second at 30fps)
             "-f",
-            "segment",
-            "-segment_time",
-            "1", // Record 1-second segments
-            "-segment_wrap",
-            &self.buffer_secs.to_string(), // Keep <buffer_secs> worth of segments
-            "-reset_timestamps",
-            "1", // Reset timestamps for each segment
-            &self.temp_pattern, // Output to replay_buffer_%03d.mp4
+            "h264", // Output raw H.264 stream
+            "-",    // Output to stdout
         ];
+
         let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args).stdin(Stdio::piped());
+        cmd.args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
         info!("[recorder] Starting ffmpeg with args: {:?}", args);
-        let child = cmd.spawn().expect("Failed to start ffmpeg");
-        self.child = Some(child);
+
+        match cmd.spawn() {
+            Ok(mut child) => {
+                if let Some(stdout) = child.stdout.take() {
+                    let replay_buffer = Arc::clone(&self.replay_buffer);
+                    let stop_signal = Arc::clone(&self.stop_signal);
+
+                    // Spawn task to read H.264 stream from FFmpeg stdout
+                    tokio::spawn(async move {
+                        let mut reader = stdout;
+                        let mut h264_parser = H264Parser::new();
+                        let mut buffer = vec![0u8; 8192]; // 8KB buffer
+
+                        info!("[recorder] Starting H.264 stream processing...");
+
+                        loop {
+                            // Check stop signal
+                            if *stop_signal.lock().await {
+                                info!("[recorder] Stop signal received, ending stream processing");
+                                break;
+                            }
+
+                            // Read chunk from FFmpeg
+                            match reader.read(&mut buffer).await {
+                                Ok(0) => {
+                                    info!("[recorder] FFmpeg stream ended");
+                                    break;
+                                }
+                                Ok(bytes_read) => {
+                                    // Parse H.264 packets and add to buffer
+                                    let packets = h264_parser.process_data(&buffer[..bytes_read]);
+                                    for (packet_data, is_keyframe) in packets {
+                                        let packet_len = packet_data.len();
+                                        replay_buffer.add_packet(packet_data, is_keyframe);
+                                        if is_keyframe {
+                                            debug!(
+                                                "[recorder] Added keyframe packet ({} bytes)",
+                                                packet_len
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("[recorder] Error reading from FFmpeg: {:?}", e);
+                                    break;
+                                }
+                            }
+                        }
+
+                        info!("[recorder] H.264 stream processing completed");
+                    });
+                }
+
+                self.child = Some(child);
+                info!("[recorder] FFmpeg process started successfully");
+            }
+            Err(e) => {
+                error!("[recorder] Failed to start ffmpeg: {:?}", e);
+            }
+        }
     }
 
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
+        // Signal the stream processing task to stop
+        *self.stop_signal.lock().await = true;
+
         if let Some(mut child) = self.child.take() {
-            debug!(
-                "[recorder] stop(): child present, stdin piped: {}",
-                child.stdin.is_some()
-            );
+            debug!("[recorder] Stopping FFmpeg process...");
+
+            // Send 'q' to FFmpeg to quit gracefully
             if let Some(mut stdin) = child.stdin.take() {
-                match stdin.write_all(
-                    b"q
-",
-                ) {
-                    Ok(_) => debug!("[recorder] sent 'q' to ffmpeg"),
-                    Err(e) => error!("[recorder] failed to send 'q': {:?}", e),
+                match stdin.write_all(b"q\n").await {
+                    Ok(_) => debug!("[recorder] Sent 'q' to ffmpeg"),
+                    Err(e) => error!("[recorder] Failed to send 'q': {:?}", e),
                 }
-            } else {
-                warn!("[recorder] no stdin to write to");
+                let _ = stdin.shutdown().await;
             }
 
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Wait a bit for graceful shutdown
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
+            // Force kill if still running
             match child.try_wait() {
-                Ok(Some(status)) => info!("[recorder] ffmpeg exited gracefully: {:?}", status),
+                Ok(Some(status)) => info!("[recorder] FFmpeg exited gracefully: {:?}", status),
                 Ok(None) => {
-                    warn!("[recorder] ffmpeg still running; killing now");
+                    warn!("[recorder] FFmpeg still running; killing now");
                     let _ = child.kill();
                     let _ = child.wait();
                 }
@@ -128,30 +179,20 @@ impl Recorder for WindowsRecorder {
         }
     }
 
-    fn save(&self, final_output_path: &str) {
-        info!("[recorder] Attempting to save buffer to {}", final_output_path);
-        match super::collect_segments(&self.buffer_secs) { // Pass buffer_secs
-            Ok(list_path) => {
-                info!("[recorder] Collected segments into: {:?}", list_path);
-                match super::assemble_segments(&list_path, final_output_path) {
-                    Ok(_) => {
-                        info!("[recorder] Assembled segments successfully to {}", final_output_path);
-                    }
-                    Err(e) => {
-                        error!("[recorder] Failed to assemble segments: {:?}", e);
-                    }
-                }
-                // Clean up the list file
-                if let Err(e) = std::fs::remove_file(&list_path) {
-                    warn!("[recorder] Failed to remove list file {:?}: {:?}", list_path, e);
-                }
+    async fn save(&self, final_output_path: &str) {
+        info!("[recorder] Saving replay buffer to {}", final_output_path);
+
+        match self.replay_buffer.save_to_file(final_output_path) {
+            Ok(_) => {
+                info!(
+                    "[recorder] Successfully saved replay buffer to {}",
+                    final_output_path
+                );
             }
             Err(e) => {
-                error!("[recorder] Failed to collect segments: {:?}", e);
+                error!("[recorder] Failed to save replay buffer: {:?}", e);
             }
         }
-        // Clean up individual segment files after assembly (or if assembly failed but list was created)
-        self.cleanup_temp_files();
     }
 
     fn get_output_path(&self) -> &str {

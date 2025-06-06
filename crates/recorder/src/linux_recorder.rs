@@ -1,6 +1,11 @@
-use std::process::{Child, Command, Stdio};
-
-use log::{debug, error, info, warn};
+use async_trait::async_trait;
+use log::{error, info, warn};
+use std::process::Stdio;
+use std::sync::Arc;
+use storage::{H264Parser, ReplayBuffer};
+use tokio::io::AsyncReadExt;
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
 
 use super::check_ffmpeg_installed;
 use super::recorder::Recorder;
@@ -11,54 +16,38 @@ pub struct LinuxRecorder {
     fps: u32,
     buffer_secs: u32,
     output: String,
-    temp_pattern: String,
     child: Option<Child>,
+    replay_buffer: Arc<ReplayBuffer>,
+    stop_signal: Arc<Mutex<bool>>,
 }
 
-impl LinuxRecorder {
-    pub fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        let temp_pattern = std::env::temp_dir()
-            .join("replay_buffer_%03d.mp4")
-            .to_string_lossy()
-            .into_owned();
+#[async_trait]
+impl Recorder for LinuxRecorder {
+    fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
+        // Calculate buffer size: assume ~2 Mbps bitrate for 1080p
+        let estimated_mbps = match (width, height) {
+            (1920, 1080) => 2,
+            (1280, 720) => 1,
+            _ => 3, // Conservative estimate for higher resolutions
+        };
+
+        let max_size_mb = estimated_mbps * buffer_secs * 60 / 8; // Convert to MB
+        let replay_buffer = Arc::new(ReplayBuffer::new(buffer_secs, max_size_mb as usize));
+
         Self {
             width,
             height,
             fps,
             buffer_secs,
             output,
-            temp_pattern,
             child: None,
+            replay_buffer,
+            stop_signal: Arc::new(Mutex::new(false)),
         }
     }
 
-    fn cleanup_temp_files(&self) {
-        info!("[recorder] Cleaning up temporary segment files (Linux)...");
-        let temp_dir = std::env::temp_dir();
-        match std::fs::read_dir(temp_dir) {
-            Ok(entries) => {
-                for entry in entries.filter_map(|e| e.ok()) {
-                    let file_name = entry.file_name().to_string_lossy().into_owned();
-                    if file_name.starts_with("replay_buffer_") && file_name.ends_with(".mp4") {
-                        if let Err(e) = std::fs::remove_file(entry.path()) {
-                            warn!("[recorder] Failed to remove temp file {:?} (Linux): {:?}", entry.path(), e);
-                        } else {
-                            debug!("[recorder] Removed temp file {:?} (Linux)", entry.path());
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("[recorder] Failed to read temp directory for cleanup (Linux): {:?}", e);
-            }
-        }
-    }
-}
-
-impl Recorder for LinuxRecorder {
-    fn start(&mut self) {
+    async fn start(&mut self) {
         check_ffmpeg_installed();
-        self.cleanup_temp_files(); // Clean up before starting
 
         let args = [
             "-y",
@@ -69,70 +58,131 @@ impl Recorder for LinuxRecorder {
             "-video_size",
             &format!("{}x{}", self.width, self.height),
             "-i",
-            ":0.0", // Consider making display configurable
+            ":0.0", // Default X11 display
             "-c:v",
             "libx264",
             "-preset",
             "ultrafast",
             "-tune",
             "zerolatency",
+            "-profile:v",
+            "baseline",
+            "-pix_fmt",
+            "yuv420p",
             "-f",
-            "segment",
-            "-segment_time",
-            "1", // Record 1-second segments
-            "-segment_wrap",
-            &self.buffer_secs.to_string(), // Keep <buffer_secs> worth of segments
-            "-reset_timestamps",
-            "1", // Reset timestamps for each segment
-            &self.temp_pattern, // Output to replay_buffer_%03d.mp4
+            "h264", // Output raw H.264 stream
+            "-",    // Output to stdout
         ];
-        info!("[recorder] Starting ffmpeg with args: {:?}", args);
+
+        info!("[recorder] Starting Linux screen capture with FFmpeg");
         let cmd = Command::new("ffmpeg")
             .args(&args)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn();
-        self.child = cmd.ok();
+
+        match cmd {
+            Ok(mut child) => {
+                if let Some(stdout) = child.stdout.take() {
+                    let replay_buffer = Arc::clone(&self.replay_buffer);
+                    let stop_signal = Arc::clone(&self.stop_signal);
+
+                    // Spawn task to read H.264 data from FFmpeg stdout
+                    tokio::task::spawn(async move {
+                        let mut parser = H264Parser::new();
+                        let mut reader = stdout;
+                        let mut buffer = vec![0u8; 8192];
+
+                        info!("[recorder] Started reading H.264 stream from FFmpeg (Linux)");
+
+                        loop {
+                            let should_stop = {
+                                let stop = stop_signal.lock().await;
+                                *stop
+                            };
+
+                            if should_stop {
+                                break;
+                            }
+
+                            match reader.read(&mut buffer).await {
+                                Ok(0) => {
+                                    warn!("[recorder] FFmpeg stdout closed (Linux)");
+                                    break;
+                                }
+                                Ok(n) => {
+                                    let packets = parser.process_data(&buffer[..n]);
+                                    for (data, is_keyframe) in packets {
+                                        replay_buffer.add_packet(data, is_keyframe);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "[recorder] Error reading from FFmpeg stdout (Linux): {:?}",
+                                        e
+                                    );
+                                    break;
+                                }
+                            }
+                        }
+
+                        info!("[recorder] Stopped reading H.264 stream (Linux)");
+                    });
+                }
+                self.child = Some(child);
+                info!("[recorder] Linux screen recording started successfully");
+            }
+            Err(e) => {
+                error!(
+                    "[recorder] Failed to start FFmpeg for Linux recording: {:?}",
+                    e
+                );
+            }
+        }
     }
 
-    fn stop(&mut self) {
+    async fn stop(&mut self) {
+        // Signal the reading task to stop
+        {
+            let mut stop = self.stop_signal.lock().await;
+            *stop = true;
+        }
+
         if let Some(mut child) = self.child.take() {
-            if let Err(e) = child.kill() {
+            if let Err(e) = child.kill().await {
                 error!("[recorder] Failed to kill ffmpeg (Linux): {:?}", e);
             } else {
                 info!("[recorder] ffmpeg process killed (Linux).");
             }
-            if let Err(e) = child.wait() {
+            if let Err(e) = child.wait().await {
                 error!("[recorder] Failed to wait for ffmpeg (Linux): {:?}", e);
             }
         } else {
             warn!("[recorder] stop(): no child to stop (Linux)");
         }
+
+        // Reset stop signal for next recording
+        {
+            let mut stop = self.stop_signal.lock().await;
+            *stop = false;
+        }
     }
 
-    fn save(&self, final_output_path: &str) {
-        info!("[recorder] Attempting to save buffer to {} (Linux)", final_output_path);
-        match super::collect_segments(&self.buffer_secs) { // Pass buffer_secs
-            Ok(list_path) => {
-                info!("[recorder] Collected segments into: {:?} (Linux)", list_path);
-                match super::assemble_segments(&list_path, final_output_path) {
-                    Ok(_) => {
-                        info!("[recorder] Assembled segments successfully to {} (Linux)", final_output_path);
-                    }
-                    Err(e) => {
-                        error!("[recorder] Failed to assemble segments (Linux): {:?}", e);
-                    }
-                }
-                if let Err(e) = std::fs::remove_file(&list_path) {
-                    warn!("[recorder] Failed to remove list file {:?} (Linux): {:?}", list_path, e);
-                }
-            }
-            Err(e) => {
-                error!("[recorder] Failed to collect segments (Linux): {:?}", e);
-            }
+    async fn save(&self, final_output_path: &str) {
+        info!(
+            "[recorder] Saving replay buffer to {} (Linux)",
+            final_output_path
+        );
+
+        if let Err(e) = self.replay_buffer.save_to_file(final_output_path) {
+            error!("[recorder] Failed to save replay buffer (Linux): {:?}", e);
+        } else {
+            info!(
+                "[recorder] Successfully saved replay buffer to {} (Linux)",
+                final_output_path
+            );
         }
-        self.cleanup_temp_files();
     }
 
     fn get_output_path(&self) -> &str {

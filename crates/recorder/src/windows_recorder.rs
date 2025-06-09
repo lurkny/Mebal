@@ -1,201 +1,280 @@
 use async_trait::async_trait;
-use log::{debug, error, info, warn};
-use std::process::Stdio;
-use std::sync::Arc;
-use storage::{H264Parser, ReplayBuffer};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use log::{debug, error, info};
+use std::{ffi::CString, ptr, sync::Arc};
 use tokio::sync::Mutex;
 
+use ffmpeg_next::software::scaling;
+
+pub use ffmpeg_next::sys;
+
 use super::recorder::Recorder;
+use storage::ReplayBuffer;
+
+type ArcM<T> = Arc<Mutex<T>>;
+
+macro_rules! cstring {
+    ($s:expr) => {
+        CString::new($s).unwrap()
+    };
+}
 
 pub struct WindowsRecorder {
     width: u32,
     height: u32,
     fps: u32,
     buffer_secs: u32,
-    output: String,
-    child: Option<Child>,
+    stop_signal: ArcM<bool>,
     replay_buffer: Arc<ReplayBuffer>,
-    stop_signal: Arc<Mutex<bool>>,
 }
 
 #[async_trait]
 impl Recorder for WindowsRecorder {
-    fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self {
-        // Calculate buffer size: assume ~2 Mbps bitrate for 1080p
-        let estimated_mbps = match (width, height) {
-            (1920, 1080) => 2,
-            (1280, 720) => 1,
-            _ => 3, // Conservative estimate for higher resolutions
-        };
+    fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, _output: String) -> Self {
+        unsafe { ffmpeg_next::init().expect("FFmpeg init failed") };
+        unsafe { sys::avdevice_register_all() };
 
-        let max_size_mb = estimated_mbps * buffer_secs * 60 / 8; // Convert to MB
-        let replay_buffer = Arc::new(ReplayBuffer::new(buffer_secs, max_size_mb as usize));
+        let estimated_packets = (fps as usize) * (buffer_secs as usize) * 2;
+        let replay_buffer = Arc::new(ReplayBuffer::new(buffer_secs, estimated_packets));
 
         Self {
             width,
             height,
             fps,
             buffer_secs,
-            output,
-            child: None,
-            replay_buffer,
             stop_signal: Arc::new(Mutex::new(false)),
+            replay_buffer,
         }
     }
 
     async fn start(&mut self) {
-        super::check_ffmpeg_installed();
-
-        // Reset stop signal
         *self.stop_signal.lock().await = false;
 
-        let args = [
-            "-y",
-            "-f",
-            "gdigrab",
-            "-framerate",
-            &self.fps.to_string(),
-            "-video_size",
-            &format!("{}x{}", self.width, self.height),
-            "-i",
-            "desktop",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-tune",
-            "zerolatency",
-            "-profile:v",
-            "baseline", // Ensure H.264 compatibility
-            "-g",
-            "30", // Keyframe every 30 frames (1 second at 30fps)
-            "-f",
-            "h264", // Output raw H.264 stream
-            "-",    // Output to stdout
-        ];
+        let stop = self.stop_signal.clone();
+        let buf = self.replay_buffer.clone();
+        let width = self.width;
+        let height = self.height;
+        let fps = self.fps;
+        let secs = self.buffer_secs;
 
-        let mut cmd = Command::new("ffmpeg");
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        tokio::task::spawn_blocking(move || {
+            capture_encode_loop_sys(width, height, fps, secs, buf, stop);
+        });
 
-        info!("[recorder] Starting ffmpeg with args: {:?}", args);
-
-        match cmd.spawn() {
-            Ok(mut child) => {
-                if let Some(stdout) = child.stdout.take() {
-                    let replay_buffer = Arc::clone(&self.replay_buffer);
-                    let stop_signal = Arc::clone(&self.stop_signal);
-
-                    // Spawn task to read H.264 stream from FFmpeg stdout
-                    tokio::spawn(async move {
-                        let mut reader = stdout;
-                        let mut h264_parser = H264Parser::new();
-                        let mut buffer = vec![0u8; 8192]; // 8KB buffer
-
-                        info!("[recorder] Starting H.264 stream processing...");
-
-                        loop {
-                            // Check stop signal
-                            if *stop_signal.lock().await {
-                                info!("[recorder] Stop signal received, ending stream processing");
-                                break;
-                            }
-
-                            // Read chunk from FFmpeg
-                            match reader.read(&mut buffer).await {
-                                Ok(0) => {
-                                    info!("[recorder] FFmpeg stream ended");
-                                    break;
-                                }
-                                Ok(bytes_read) => {
-                                    // Parse H.264 packets and add to buffer
-                                    let packets = h264_parser.process_data(&buffer[..bytes_read]);
-                                    for (packet_data, is_keyframe) in packets {
-                                        let packet_len = packet_data.len();
-                                        replay_buffer.add_packet(packet_data, is_keyframe);
-                                        if is_keyframe {
-                                            debug!(
-                                                "[recorder] Added keyframe packet ({} bytes)",
-                                                packet_len
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("[recorder] Error reading from FFmpeg: {:?}", e);
-                                    break;
-                                }
-                            }
-                        }
-
-                        info!("[recorder] H.264 stream processing completed");
-                    });
-                }
-
-                self.child = Some(child);
-                info!("[recorder] FFmpeg process started successfully");
-            }
-            Err(e) => {
-                error!("[recorder] Failed to start ffmpeg: {:?}", e);
-            }
-        }
+        info!("[recorder] ffmpeg-sys capture thread started");
     }
 
     async fn stop(&mut self) {
-        // Signal the stream processing task to stop
         *self.stop_signal.lock().await = true;
-
-        if let Some(mut child) = self.child.take() {
-            debug!("[recorder] Stopping FFmpeg process...");
-
-            // Send 'q' to FFmpeg to quit gracefully
-            if let Some(mut stdin) = child.stdin.take() {
-                match stdin.write_all(b"q\n").await {
-                    Ok(_) => debug!("[recorder] Sent 'q' to ffmpeg"),
-                    Err(e) => error!("[recorder] Failed to send 'q': {:?}", e),
-                }
-                let _ = stdin.shutdown().await;
-            }
-
-            // Wait a bit for graceful shutdown
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-            // Force kill if still running
-            match child.try_wait() {
-                Ok(Some(status)) => info!("[recorder] FFmpeg exited gracefully: {:?}", status),
-                Ok(None) => {
-                    warn!("[recorder] FFmpeg still running; killing now");
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
-                Err(e) => error!("[recorder] try_wait() failed: {:?}", e),
-            }
-        } else {
-            warn!("[recorder] stop(): no child to stop");
-        }
     }
 
-    async fn save(&self, final_output_path: &str) {
+    fn save(
+        &self,
+        final_output_path: &str,
+        codecpar: *mut sys::AVCodecParameters,
+    ) -> Result<(), String> {
         info!("[recorder] Saving replay buffer to {}", final_output_path);
-
-        match self.replay_buffer.save_to_file(final_output_path) {
-            Ok(_) => {
-                info!(
-                    "[recorder] Successfully saved replay buffer to {}",
-                    final_output_path
-                );
-            }
-            Err(e) => {
-                error!("[recorder] Failed to save replay buffer: {:?}", e);
-            }
-        }
+        self.replay_buffer.save_to_file(final_output_path, codecpar)
     }
 
     fn get_output_path(&self) -> &str {
-        &self.output
+        "output.mp4"
+    }
+}
+
+// Safe wrapper around AVDictionary
+struct AVDict(*mut sys::AVDictionary);
+
+impl AVDict {
+    fn new() -> Self {
+        Self(ptr::null_mut())
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut *mut sys::AVDictionary {
+        &mut self.0
+    }
+
+    fn inner(&self) -> *mut sys::AVDictionary {
+        self.0
+    }
+
+    fn set(&mut self, key: &str, value: &str) {
+        let key = cstring!(key);
+        let value = cstring!(value);
+        unsafe {
+            sys::av_dict_set(&mut self.0, key.as_ptr(), value.as_ptr(), 0);
+        }
+    }
+}
+
+impl Drop for AVDict {
+    fn drop(&mut self) {
+        unsafe {
+            sys::av_dict_free(&mut self.0);
+        }
+    }
+}
+
+#[allow(unused_assignments)]
+fn capture_encode_loop_sys(
+    width: u32,
+    height: u32,
+    fps: u32,
+    _buffer_secs: u32,
+    replay_buffer: Arc<ReplayBuffer>,
+    stop_signal: ArcM<bool>,
+) {
+    unsafe {
+        let mut fmt_ctx: *mut sys::AVFormatContext = ptr::null_mut();
+        let mut dec_ctx: *mut sys::AVCodecContext = ptr::null_mut();
+        let mut enc_ctx: *mut sys::AVCodecContext = ptr::null_mut();
+        let mut scaler_ctx: *mut sys::SwsContext = ptr::null_mut();
+        let mut packet: *mut sys::AVPacket = ptr::null_mut();
+        let mut decoded_frame: *mut sys::AVFrame = ptr::null_mut();
+        let mut scaled_frame: *mut sys::AVFrame = ptr::null_mut();
+
+        let input_format = sys::av_find_input_format(cstring!("gdigrab").as_ptr());
+        if input_format.is_null() {
+            error!("[recorder] Failed to find gdigrab input format");
+            return;
+        }
+
+        let mut dict = AVDict::new();
+        dict.set("framerate", &fps.to_string());
+        dict.set("video_size", &format!("{}x{}", width, height));
+
+        let url = CString::new("desktop").unwrap();
+        let ret =
+            sys::avformat_open_input(&mut fmt_ctx, url.as_ptr(), input_format, dict.as_mut_ptr());
+        if ret < 0 {
+            return;
+        }
+
+        if sys::avformat_find_stream_info(fmt_ctx, ptr::null_mut()) < 0 {
+            error!("[recorder] Failed to find stream info");
+            sys::avformat_close_input(&mut fmt_ctx);
+            return;
+        }
+
+        let mut video_stream_index = -1;
+        for i in 0..(*fmt_ctx).nb_streams as i32 {
+            let stream = *(*fmt_ctx).streams.add(i as usize);
+            if (*(*stream).codecpar).codec_type == sys::AVMediaType::AVMEDIA_TYPE_VIDEO {
+                video_stream_index = i;
+                break;
+            }
+        }
+
+        if video_stream_index == -1 {
+            error!("[recorder] Failed to find video stream");
+            sys::avformat_close_input(&mut fmt_ctx);
+            return;
+        }
+
+        let input_stream = *(*fmt_ctx).streams.add(video_stream_index as usize);
+        let codecpar = (*input_stream).codecpar;
+        let decoder = sys::avcodec_find_decoder((*codecpar).codec_id);
+        dec_ctx = sys::avcodec_alloc_context3(decoder);
+        sys::avcodec_parameters_to_context(dec_ctx, codecpar);
+        sys::avcodec_open2(dec_ctx, decoder, ptr::null_mut());
+
+        scaler_ctx = sys::sws_getContext(
+            (*dec_ctx).width,
+            (*dec_ctx).height,
+            (*dec_ctx).pix_fmt,
+            width as i32,
+            height as i32,
+            sys::AVPixelFormat::AV_PIX_FMT_YUV420P,
+            sys::SWS_BILINEAR as i32,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+        );
+
+        let encoder = sys::avcodec_find_encoder(sys::AVCodecID::AV_CODEC_ID_H264);
+        enc_ctx = sys::avcodec_alloc_context3(encoder);
+        (*enc_ctx).width = width as i32;
+        (*enc_ctx).height = height as i32;
+        (*enc_ctx).pix_fmt = sys::AVPixelFormat::AV_PIX_FMT_YUV420P;
+        (*enc_ctx).time_base = sys::AVRational {
+            num: 1,
+            den: fps as i32,
+        };
+        (*enc_ctx).framerate = sys::AVRational {
+            num: fps as i32,
+            den: 1,
+        };
+        (*enc_ctx).gop_size = fps as i32;
+        (*enc_ctx).max_b_frames = 0;
+
+        let mut enc_opts = AVDict::new();
+        enc_opts.set("preset", "ultrafast");
+        enc_opts.set("tune", "zerolatency");
+        sys::avcodec_open2(enc_ctx, encoder, enc_opts.as_mut_ptr());
+
+        // Where the real work happens
+        packet = sys::av_packet_alloc();
+        decoded_frame = sys::av_frame_alloc();
+        scaled_frame = sys::av_frame_alloc();
+        (*scaled_frame).width = width as i32;
+        (*scaled_frame).height = height as i32;
+        (*scaled_frame).format = sys::AVPixelFormat::AV_PIX_FMT_YUV420P as i32;
+        sys::av_frame_get_buffer(scaled_frame, 0);
+
+        let mut frame_index = 0;
+
+        while sys::av_read_frame(fmt_ctx, packet) >= 0 {
+            if *stop_signal.blocking_lock() {
+                sys::av_packet_unref(packet);
+                break;
+            }
+
+            if (*packet).stream_index == video_stream_index {
+                if sys::avcodec_send_packet(dec_ctx, packet) >= 0 {
+                    while sys::avcodec_receive_frame(dec_ctx, decoded_frame) >= 0 {
+                        //Scale the frame
+                        sys::sws_scale(
+                            scaler_ctx,
+                            (*decoded_frame).data.as_ptr() as *const *const u8,
+                            (*decoded_frame).linesize.as_ptr(),
+                            0,
+                            (*dec_ctx).height,
+                            (*scaled_frame).data.as_ptr(),
+                            (*scaled_frame).linesize.as_ptr(),
+                        );
+
+                        (*scaled_frame).pts = frame_index;
+                        frame_index += 1;
+
+                        // Encode the scaled frame
+                        if sys::avcodec_send_frame(enc_ctx, scaled_frame) >= 0 {
+                            let mut enc_packet = sys::av_packet_alloc();
+                            while sys::avcodec_receive_packet(enc_ctx, enc_packet) >= 0 {
+                                let is_key =
+                                    ((*enc_packet).flags & sys::AV_PKT_FLAG_KEY as i32) != 0;
+                                let data = std::slice::from_raw_parts(
+                                    (*enc_packet).data,
+                                    (*enc_packet).size as usize,
+                                );
+                                replay_buffer.add_packet(data.to_vec(), is_key);
+                                sys::av_packet_unref(enc_packet);
+                            }
+                            sys::av_packet_free(&mut enc_packet);
+                        }
+                    }
+                }
+            }
+            sys::av_packet_unref(packet);
+        }
+
+        sys::av_frame_free(&mut decoded_frame);
+        sys::av_frame_free(&mut scaled_frame);
+        sys::av_packet_free(&mut packet);
+
+        sys::sws_freeContext(scaler_ctx);
+
+        sys::avcodec_free_context(&mut dec_ctx);
+        sys::avcodec_free_context(&mut enc_ctx);
+
+        sys::avformat_close_input(&mut fmt_ctx);
     }
 }

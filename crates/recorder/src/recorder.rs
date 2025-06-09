@@ -5,6 +5,10 @@ pub trait Recorder: Send + Sync {
         Self: Sized;
     async fn start(&mut self);
     async fn stop(&mut self);
-    async fn save(&self, final_output_path: &str);
+    fn save(
+        &self,
+        final_output_path: &str,
+        codecpar: *mut ffmpeg_next::ffi::AVCodecParameters,
+    ) -> Result<(), String>;
     fn get_output_path(&self) -> &str;
 }

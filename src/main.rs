@@ -68,9 +68,7 @@ pub fn app() -> Element {
             OutputPathInput {  }
             BufferSecondsInput {  }
             StartBufferButton {  }
-            input_device_list {  }
-
-
+           // input_device_list {  }
     }
 }
 
@@ -134,9 +132,7 @@ fn BufferSecondsInput() -> Element {
     }
 }
 
-use recorder::utils::get_audio_devices;
-use recorder::utils::get_video_devices;
-
+/*
 #[component]
 fn input_device_list() -> Element {
     let video_devices = get_video_devices();
@@ -159,6 +155,7 @@ fn input_device_list() -> Element {
         }
     }
 }
+    */
 
 #[component]
 fn StartBufferButton() -> Element {
@@ -241,7 +238,6 @@ fn start_recording(resolution: &str, fps: &str, output_path: &str, buffer_secs: 
             while let Some(output_path) = rx.recv().await {
                 info!("[recorder] Processing F2 event: stopping buffer, saving, and restarting buffer...");
                 recorder.stop().await;
-                recorder.save(&output_path).await;
                 info!("[recorder] Saved buffer to {}", output_path);
                 info!("[recorder] Restarting recording buffer...");
                 recorder.start().await; // Restart the recording

@@ -4,7 +4,7 @@ use dioxus::{
     prelude::*,
 };
 pub use env_logger;
-use log::{debug, info};
+use log::{debug, info, error};
 use rdev::{listen, EventType, Key};
 use recorder::create_recorder;
 
@@ -236,12 +236,16 @@ fn start_recording(resolution: &str, fps: &str, output_path: &str, buffer_secs: 
 
             // Handle F2 events in the async context
             while let Some(output_path) = rx.recv().await {
-                info!("[recorder] Processing F2 event: stopping buffer, saving, and restarting buffer...");
-                recorder.stop().await;
-                info!("[recorder] Saved buffer to {}", output_path);
-                info!("[recorder] Restarting recording buffer...");
-                recorder.start().await; // Restart the recording
-                info!("[recorder] Recording buffer restarted.");
+                info!("[recorder] Processing F2 event: saving buffer...");
+                match recorder.save(&output_path) {
+                    Ok(()) => {
+                        info!("[recorder] Successfully saved buffer to {}", output_path);
+                    }
+                    Err(e) => {
+                        error!("[recorder] Failed to save buffer: {}", e);
+                    }
+                }
+                info!("[recorder] Continue recording...");
             }
         });
     });

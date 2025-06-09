@@ -2,8 +2,9 @@ use async_trait::async_trait;
 use log::{debug, error, info};
 use std::{ffi::CString, ptr, sync::Arc};
 use tokio::sync::Mutex;
-
+use crate::cstring;
 use ffmpeg_next::software::scaling;
+use crate::avdict::AVDict;
 
 pub use ffmpeg_next::sys;
 
@@ -12,11 +13,10 @@ use storage::ReplayBuffer;
 
 type ArcM<T> = Arc<Mutex<T>>;
 
-macro_rules! cstring {
-    ($s:expr) => {
-        CString::new($s).unwrap()
-    };
-}
+#[derive(Copy, Clone)]
+pub struct CodecParPtr(pub *mut sys::AVCodecParameters);
+unsafe impl Send for CodecParPtr {}
+unsafe impl Sync for CodecParPtr {}
 
 pub struct WindowsRecorder {
     width: u32,
@@ -25,12 +25,19 @@ pub struct WindowsRecorder {
     buffer_secs: u32,
     stop_signal: ArcM<bool>,
     replay_buffer: Arc<ReplayBuffer>,
+    codecpar: std::sync::Arc<std::sync::Mutex<Option<CodecParPtr>>>,
 }
+
+// SAFETY: We ensure the pointer is only used while valid.
+unsafe impl Send for WindowsRecorder {}
+unsafe impl Sync for WindowsRecorder {}
+
+
 
 #[async_trait]
 impl Recorder for WindowsRecorder {
     fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, _output: String) -> Self {
-        unsafe { ffmpeg_next::init().expect("FFmpeg init failed") };
+        ffmpeg_next::init().expect("FFmpeg init failed");
         unsafe { sys::avdevice_register_all() };
 
         let estimated_packets = (fps as usize) * (buffer_secs as usize) * 2;
@@ -43,6 +50,7 @@ impl Recorder for WindowsRecorder {
             buffer_secs,
             stop_signal: Arc::new(Mutex::new(false)),
             replay_buffer,
+            codecpar: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -55,9 +63,10 @@ impl Recorder for WindowsRecorder {
         let height = self.height;
         let fps = self.fps;
         let secs = self.buffer_secs;
+        let codecpar_arc = self.codecpar.clone();
 
         tokio::task::spawn_blocking(move || {
-            capture_encode_loop_sys(width, height, fps, secs, buf, stop);
+            capture_encode_loop_sys(width, height, fps, secs, buf, stop, codecpar_arc);
         });
 
         info!("[recorder] ffmpeg-sys capture thread started");
@@ -67,11 +76,9 @@ impl Recorder for WindowsRecorder {
         *self.stop_signal.lock().await = true;
     }
 
-    fn save(
-        &self,
-        final_output_path: &str,
-        codecpar: *mut sys::AVCodecParameters,
-    ) -> Result<(), String> {
+    fn save(&self, final_output_path: &str) -> Result<(), String> {
+        let codecpar = self.codecpar.lock().unwrap();
+        let codecpar = codecpar.ok_or("Codec parameters not set")?.0;
         info!("[recorder] Saving replay buffer to {}", final_output_path);
         self.replay_buffer.save_to_file(final_output_path, codecpar)
     }
@@ -81,38 +88,6 @@ impl Recorder for WindowsRecorder {
     }
 }
 
-// Safe wrapper around AVDictionary
-struct AVDict(*mut sys::AVDictionary);
-
-impl AVDict {
-    fn new() -> Self {
-        Self(ptr::null_mut())
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut *mut sys::AVDictionary {
-        &mut self.0
-    }
-
-    fn inner(&self) -> *mut sys::AVDictionary {
-        self.0
-    }
-
-    fn set(&mut self, key: &str, value: &str) {
-        let key = cstring!(key);
-        let value = cstring!(value);
-        unsafe {
-            sys::av_dict_set(&mut self.0, key.as_ptr(), value.as_ptr(), 0);
-        }
-    }
-}
-
-impl Drop for AVDict {
-    fn drop(&mut self) {
-        unsafe {
-            sys::av_dict_free(&mut self.0);
-        }
-    }
-}
 
 #[allow(unused_assignments)]
 fn capture_encode_loop_sys(
@@ -122,6 +97,7 @@ fn capture_encode_loop_sys(
     _buffer_secs: u32,
     replay_buffer: Arc<ReplayBuffer>,
     stop_signal: ArcM<bool>,
+    codecpar_arc: std::sync::Arc<std::sync::Mutex<Option<CodecParPtr>>>,
 ) {
     unsafe {
         let mut fmt_ctx: *mut sys::AVFormatContext = ptr::null_mut();
@@ -171,10 +147,11 @@ fn capture_encode_loop_sys(
         }
 
         let input_stream = *(*fmt_ctx).streams.add(video_stream_index as usize);
-        let codecpar = (*input_stream).codecpar;
-        let decoder = sys::avcodec_find_decoder((*codecpar).codec_id);
+        let input_codecpar = (*input_stream).codecpar;
+
+        let decoder = sys::avcodec_find_decoder((*input_codecpar).codec_id);
         dec_ctx = sys::avcodec_alloc_context3(decoder);
-        sys::avcodec_parameters_to_context(dec_ctx, codecpar);
+        sys::avcodec_parameters_to_context(dec_ctx, input_codecpar);
         sys::avcodec_open2(dec_ctx, decoder, ptr::null_mut());
 
         scaler_ctx = sys::sws_getContext(
@@ -207,9 +184,19 @@ fn capture_encode_loop_sys(
         (*enc_ctx).max_b_frames = 0;
 
         let mut enc_opts = AVDict::new();
-        enc_opts.set("preset", "ultrafast");
+        enc_opts.set("preset", "fast");  // Better quality than ultrafast
+        enc_opts.set("crf", "18");       // High quality (lower is better, 18 is very high quality)
         enc_opts.set("tune", "zerolatency");
         sys::avcodec_open2(enc_ctx, encoder, enc_opts.as_mut_ptr());
+
+        // Store encoder's codec parameters for later use
+        {
+            let encoder_codecpar = sys::avcodec_parameters_alloc();
+            if sys::avcodec_parameters_from_context(encoder_codecpar, enc_ctx) >= 0 {
+                let mut lock = codecpar_arc.lock().unwrap();
+                *lock = Some(CodecParPtr(encoder_codecpar));
+            }
+        }
 
         // Where the real work happens
         packet = sys::av_packet_alloc();

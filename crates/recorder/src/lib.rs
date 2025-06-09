@@ -7,14 +7,11 @@ pub mod osx_recorder;
 pub mod recorder;
 pub mod utils;
 pub mod windows_recorder;
+pub mod avdict;
 
 use recorder::Recorder;
 
-fn check_ffmpeg_installed() {
-    if Command::new("ffmpeg").arg("-version").output().is_err() {
-        panic!("ffmpeg not found. Please install ffmpeg and ensure it is available in your PATH.");
-    }
-}
+
 
 pub fn init() {}
 

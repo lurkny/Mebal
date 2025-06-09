@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ffmpeg_next::ffi::AVCodecParameters;
-use ffmpeg_next::{codec, sys};
+use ffmpeg_next::sys;
 
 #[derive(Clone)]
 #[repr(C)]
@@ -92,14 +92,12 @@ impl ReplayBuffer {
                 return Err("Failed to create new stream".to_string());
             }
 
-            // Copy codec parameters from input
             if sys::avcodec_parameters_copy((*stream).codecpar, codecpar) < 0 {
                 sys::avformat_free_context(format_ctx);
                 return Err("Failed to copy codec parameters".to_string());
             }
 
-            // Set a default time_base (e.g., 1/30 for 30 fps)
-            (*stream).time_base = sys::AVRational { num: 1, den: 30 };
+            (*(*stream).codecpar).codec_id = sys::AVCodecID::AV_CODEC_ID_H264;
 
             // Open output file if needed
             if (*(*format_ctx).oformat).flags & sys::AVFMT_NOFILE == 0 {
@@ -119,17 +117,16 @@ impl ReplayBuffer {
                 return Err("Failed to write header".to_string());
             }
 
-            // Write packets, set pts/dts incrementally
-            let mut pts = 0;
-            let mut dts = 0;
-            let duration = 1; // You may want to set this based on fps
+            // Write packets with proper timestamps for 30 fps
+            let mut frame_count = 0;
+            
             for packet in packets.iter().skip(first_keyframe.unwrap()) {
                 let mut av_packet = sys::AVPacket {
                     data: packet.data.as_ptr() as *mut u8,
                     size: packet.data.len() as i32,
-                    pts,
-                    dts,
-                    duration,
+                    pts: frame_count,
+                    dts: frame_count,
+                    duration: 1,
                     stream_index: 0,
                     flags: if packet.is_keyframe {
                         sys::AV_PKT_FLAG_KEY
@@ -138,8 +135,8 @@ impl ReplayBuffer {
                     },
                     ..std::mem::zeroed()
                 };
-                pts += 1;
-                dts += 1;
+                
+                frame_count += 1;
 
                 if sys::av_interleaved_write_frame(format_ctx, &mut av_packet) < 0 {
                     if (*(*format_ctx).oformat).flags & sys::AVFMT_NOFILE == 0 {

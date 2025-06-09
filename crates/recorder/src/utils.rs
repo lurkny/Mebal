@@ -1,3 +1,10 @@
-use std::process::Command;
 
-use ffmpeg_next::{Dictionary, format};
+
+
+/// A macro to create a `CString` from a string literal.
+#[macro_export]
+macro_rules! cstring {
+    ($s:expr) => {
+        ::std::ffi::CString::new($s).unwrap()
+    };
+}

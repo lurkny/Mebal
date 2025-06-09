@@ -7,7 +7,6 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
-use super::check_ffmpeg_installed;
 use super::recorder::Recorder;
 
 pub struct OsxRecorder {

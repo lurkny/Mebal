@@ -46,12 +46,9 @@ impl ReplayBuffer {
             None => return,
         };
 
-        // --- Start of Pruning Logic ---
-        // Find the index of the first packet that is NEWER than our cutoff time.
         let first_valid_index = packets.iter().position(|p| p.timestamp >= cutoff_time);
 
         if let Some(start_idx) = first_valid_index {
-            // We found the start of the "good" data. Now find the last keyframe before it.
             let last_keyframe_before_valid = packets.iter()
                 .take(start_idx + 1)
                 .rposition(|p| p.is_keyframe);
@@ -68,8 +65,6 @@ impl ReplayBuffer {
                 }
             }
         } else {
-             // This case means ALL packets are older than the cutoff time.
-             // We should keep only the very last GOP.
             if let Some(last_key_idx) = packets.iter().rposition(|p| p.is_keyframe) {
                 if last_key_idx > 0 {
                     packets.drain(0..last_key_idx);
@@ -85,14 +80,13 @@ impl ReplayBuffer {
     }
 
 
-// This is the final version that implements the "save last X seconds" feature.
 pub fn save_to_file(
     &self,
     output_path: &str,
     codecpar: *mut sys::AVCodecParameters,
     fps: u32,
 ) -> Result<(), String> {
-    const REPLAY_DURATION_SECS: u64 = 15; // Save the last 15 seconds
+    const REPLAY_DURATION_SECS: u64 = 15; 
 
     let packets_guard = self.packets.lock().unwrap();
     if packets_guard.is_empty() {
@@ -149,8 +143,6 @@ pub fn save_to_file(
             return Err("Failed to copy codec parameters".to_string());
         }
         
-        // --- KEY CHANGE: DO NOT SET THE STREAM TIME_BASE MANUALLY ---
-        // We will let the muxer use its own preferred time_base (e.g. 1/15360 or 1/90000)
 
         if (*(*format_ctx).oformat).flags & sys::AVFMT_NOFILE == 0 {
             if sys::avio_open(&mut (*format_ctx).pb, c_output_path.as_ptr(), sys::AVIO_FLAG_WRITE) < 0 {
@@ -167,8 +159,7 @@ pub fn save_to_file(
             return Err("Failed to write header".to_string());
         }
         
-        // --- KEY CHANGE: DEFINE OUR SOURCE TIME_BASE AND RESCALE ---
-        // 1. Define the time_base of our simple frame counter (pts_count)
+
         let source_time_base = sys::AVRational { num: 1, den: fps as i32 };
         let mut pts_count: i64 = 0;
 
@@ -186,14 +177,12 @@ pub fn save_to_file(
             (*av_packet).flags = if packet_to_save.is_keyframe { sys::AV_PKT_FLAG_KEY as i32 } else { 0 };
             (*av_packet).stream_index = (*stream).index;
             
-            // 2. Set the packet's timestamps based on the simple frame count
             (*av_packet).pts = pts_count;
             (*av_packet).dts = pts_count;
-            (*av_packet).duration = 1; // Duration is 1 tick in the SOURCE time_base
+            (*av_packet).duration = 1; 
             
             pts_count += 1;
 
-            // 3. Rescale the timestamps from our source (1/fps) to the stream's destination time_base
             sys::av_packet_rescale_ts(
                 av_packet,
                 source_time_base,      // From

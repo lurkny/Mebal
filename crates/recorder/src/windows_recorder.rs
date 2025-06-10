@@ -1,22 +1,16 @@
 use crate::avdict::AVDict;
+use crate::codecpar::CodecParPtr;
 use crate::cstring;
 use async_trait::async_trait;
-use ffmpeg_next::software::scaling;
-use log::{debug, error, info};
-use std::{ffi::CString, ptr, sync::Arc};
-use tokio::sync::Mutex;
-
 pub use ffmpeg_next::sys;
+use log::{error, info};
+use std::{ptr, sync::Arc};
+use tokio::sync::Mutex;
 
 use super::recorder::Recorder;
 use storage::ReplayBuffer;
 
 type ArcM<T> = Arc<Mutex<T>>;
-
-#[derive(Copy, Clone)]
-pub struct CodecParPtr(pub *mut sys::AVCodecParameters);
-unsafe impl Send for CodecParPtr {}
-unsafe impl Sync for CodecParPtr {}
 
 pub struct WindowsRecorder {
     width: u32,
@@ -78,7 +72,8 @@ impl Recorder for WindowsRecorder {
         let codecpar = self.codecpar.lock().unwrap();
         let codecpar = codecpar.ok_or("Codec parameters not set")?.0;
         info!("[recorder] Saving replay buffer to {}", final_output_path);
-        self.replay_buffer.save_to_file(final_output_path, codecpar, 30)
+        self.replay_buffer
+            .save_to_file(final_output_path, codecpar, 30)
     }
 
     fn get_output_path(&self) -> &str {
@@ -105,7 +100,6 @@ fn capture_encode_loop_sys(
         let mut decoded_frame: *mut sys::AVFrame = ptr::null_mut();
         let mut scaled_frame: *mut sys::AVFrame = ptr::null_mut();
 
-        // --- GDI Capture Setup ---
         let input_format = sys::av_find_input_format(cstring!("gdigrab").as_ptr());
         if input_format.is_null() {
             error!("[recorder] Failed to find gdigrab input format");
@@ -116,7 +110,7 @@ fn capture_encode_loop_sys(
         dict.set("framerate", &fps.to_string());
         dict.set("video_size", &format!("{}x{}", width, height));
 
-        let url = CString::new("desktop").unwrap();
+        let url = cstring!("desktop");
         if sys::avformat_open_input(&mut fmt_ctx, url.as_ptr(), input_format, dict.as_mut_ptr()) < 0
         {
             error!("[recorder] Failed to open gdigrab input");
@@ -165,15 +159,12 @@ fn capture_encode_loop_sys(
             ptr::null_mut(),
         );
 
-        // --- ENCODER CONFIGURATION (MODIFIED SECTION) ---
-
-        // Prioritize hardware encoding (NVIDIA NVENC), fall back to software (libx264)
         let preferred_encoders = ["h264_nvenc", "libx264"];
         let mut encoder: *const sys::AVCodec = ptr::null();
         let mut chosen_encoder_name = "";
 
         for name in preferred_encoders.iter() {
-            let c_name = CString::new(*name).unwrap();
+            let c_name = cstring!(*name);
             let found_encoder = sys::avcodec_find_encoder_by_name(c_name.as_ptr());
             if !found_encoder.is_null() {
                 encoder = found_encoder;
@@ -196,10 +187,12 @@ fn capture_encode_loop_sys(
         if enc_ctx.is_null() {
             error!("[recorder] Failed to allocate encoder context");
             // Perform cleanup
+            sys::sws_freeContext(scaler_ctx);
+            sys::avcodec_free_context(&mut dec_ctx);
+            sys::avformat_close_input(&mut fmt_ctx);
             return;
         }
 
-        // --- Set common encoder parameters ---
         (*enc_ctx).width = width as i32;
         (*enc_ctx).height = height as i32;
         (*enc_ctx).pix_fmt = sys::AVPixelFormat::AV_PIX_FMT_YUV420P;
@@ -212,44 +205,35 @@ fn capture_encode_loop_sys(
             den: 1,
         };
 
-        // Set GOP size for seekability. A 1-second interval is great for replay buffers.
         (*enc_ctx).gop_size = fps as i32;
-        // B-frames increase latency, disable them for replay buffers.
         (*enc_ctx).max_b_frames = 0;
 
-        // --- Set encoder-specific options ---
         let mut enc_opts = AVDict::new();
+
+        //Find best encoder
         match chosen_encoder_name {
             "h264_nvenc" => {
                 info!("[recorder] Applying h264_nvenc settings");
-                // Use a low-latency, high-quality preset for NVENC
                 enc_opts.set("preset", "p5"); // p4 or p5 are good balances of speed/quality
                 enc_opts.set("tune", "ll"); // Low-latency tune
                 enc_opts.set("rc", "vbr"); // Variable bitrate
-                enc_opts.set("cq", "24"); // Constant Quality level (18-28 is a good range)
-                (*enc_ctx).pix_fmt = sys::AVPixelFormat::AV_PIX_FMT_YUV420P; // NVENC often prefers this
+                enc_opts.set("cq", "24");
+                (*enc_ctx).pix_fmt = sys::AVPixelFormat::AV_PIX_FMT_YUV420P;
             }
             "libx264" => {
                 info!("[recorder] Applying libx264 settings");
-                // Use a very fast preset to reduce CPU load.
                 enc_opts.set("preset", "veryfast");
-                // `zerolatency` is crucial for replay buffers.
                 enc_opts.set("tune", "zerolatency");
-                // CRF 22 is a great balance of quality and file size for screen content.
                 enc_opts.set("crf", "22");
             }
-            _ => { /* No specific options needed for other potential encoders */ }
+            _ => {}
         }
 
         if sys::avcodec_open2(enc_ctx, encoder, enc_opts.as_mut_ptr()) < 0 {
             error!("[recorder] Failed to open encoder");
-            // Perform cleanup
             return;
         }
 
-        // --- END OF MODIFIED SECTION ---
-
-        // Store encoder's codec parameters for later use
         {
             let encoder_codecpar = sys::avcodec_parameters_alloc();
             if sys::avcodec_parameters_from_context(encoder_codecpar, enc_ctx) >= 0 {
@@ -258,7 +242,7 @@ fn capture_encode_loop_sys(
             }
         }
 
-        // --- Frame & Packet Allocation ---
+        // Allocate frames and packets
         packet = sys::av_packet_alloc();
         decoded_frame = sys::av_frame_alloc();
         scaled_frame = sys::av_frame_alloc();
@@ -269,7 +253,7 @@ fn capture_encode_loop_sys(
 
         let mut frame_index = 0i64;
 
-        // --- Main Capture Loop ---
+        // Capture Loop
         while sys::av_read_frame(fmt_ctx, packet) >= 0 {
             if *stop_signal.blocking_lock() {
                 sys::av_packet_unref(packet);
@@ -279,7 +263,7 @@ fn capture_encode_loop_sys(
             if (*packet).stream_index == video_stream_index {
                 if sys::avcodec_send_packet(dec_ctx, packet) >= 0 {
                     while sys::avcodec_receive_frame(dec_ctx, decoded_frame) >= 0 {
-                        //Scale the frame
+                        //Scale
                         sys::sws_scale(
                             scaler_ctx,
                             (*decoded_frame).data.as_ptr() as *const *const u8,
@@ -293,7 +277,7 @@ fn capture_encode_loop_sys(
                         (*scaled_frame).pts = frame_index;
                         frame_index += 1;
 
-                        // Encode the scaled frame
+                        //Encode
                         if sys::avcodec_send_frame(enc_ctx, scaled_frame) >= 0 {
                             loop {
                                 let mut enc_packet = sys::av_packet_alloc();
@@ -324,7 +308,7 @@ fn capture_encode_loop_sys(
             sys::av_packet_unref(packet);
         }
 
-        // --- Cleanup ---
+        // Cleanup
         sys::av_frame_free(&mut decoded_frame);
         sys::av_frame_free(&mut scaled_frame);
         sys::av_packet_free(&mut packet);

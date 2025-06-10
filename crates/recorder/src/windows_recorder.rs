@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use common::avdict::AVDict;
 use crate::codecpar::CodecParPtr;
-use crate::cstring;
+use common::cstring;
 use common::sys;
 use super::recorder::Recorder;
 use storage::ReplayBuffer;
@@ -31,7 +31,7 @@ unsafe impl Sync for WindowsRecorder {}
 #[async_trait]
 impl Recorder for WindowsRecorder {
     fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, _output: String) -> Self {
-        ffmpeg_next::init().expect("FFmpeg init failed");
+       // ffmpeg_next::init().expect("FFmpeg init failed");
         unsafe { sys::avdevice_register_all() };
 
         let estimated_packets = (fps as usize) * (buffer_secs as usize) * 2;

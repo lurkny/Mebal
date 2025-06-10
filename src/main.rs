@@ -4,7 +4,7 @@ use dioxus::{
     prelude::*,
 };
 pub use env_logger;
-use log::{debug, info, error};
+use log::{debug, error, info};
 use rdev::{listen, EventType, Key};
 use recorder::create_recorder;
 

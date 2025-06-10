@@ -1,5 +1,5 @@
-use crate::windows_recorder::sys;
 use crate::cstring;
+use crate::windows_recorder::sys;
 use std::ptr;
 
 // Safe wrapper around AVDictionary

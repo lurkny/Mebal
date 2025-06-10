@@ -2,16 +2,14 @@
 
 use std::process::Command;
 
+pub mod avdict;
 pub mod linux_recorder;
 pub mod osx_recorder;
 pub mod recorder;
 pub mod utils;
 pub mod windows_recorder;
-pub mod avdict;
 
 use recorder::Recorder;
-
-
 
 pub fn init() {}
 

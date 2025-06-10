@@ -4,6 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = "1.0"
-ffmpeg-next = "7.1.0"
-log = "0.4.27"
+common = {path = "../common"}

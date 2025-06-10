@@ -9,7 +9,7 @@ repository = "https://github.com/lurkny/Mebal"
 
 
 [workspace]
-members = [
+members = [ "crates/common",
     "crates/recorder"
 , "crates/storage"]
 

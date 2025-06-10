@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use log::{error, info, warn};
+use common::log::{error, info, warn};
 use std::process::Stdio;
 use std::sync::Arc;
 use storage::ReplayBuffer;

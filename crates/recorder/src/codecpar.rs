@@ -1,4 +1,4 @@
-use crate::windows_recorder::sys;
+use common::sys;
 
 #[derive(Copy, Clone)]
 pub struct CodecParPtr(pub *mut sys::AVCodecParameters);

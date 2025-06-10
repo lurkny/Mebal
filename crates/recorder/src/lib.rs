@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-pub mod avdict;
+
 pub mod codecpar;
 pub mod linux_recorder;
 pub mod osx_recorder;

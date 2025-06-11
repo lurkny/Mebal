@@ -538,8 +538,10 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "ffmpeg-next",
  "log",
+ "tokio",
 ]
 
 [[package]]
@@ -3654,10 +3656,8 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "common",
  "storage",
- "tokio",
 ]
 
 [[package]]

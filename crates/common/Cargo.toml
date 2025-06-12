@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ffmpeg-next = "7.1.0"
-anyhow = "1.0"
-log = "0.4.27"
+ffmpeg-next = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }

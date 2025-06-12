@@ -1,4 +1,4 @@
-#[async_trait::async_trait]
+#[common::async_trait::async_trait]
 pub trait Recorder: Send + Sync {
     fn new(width: u32, height: u32, fps: u32, buffer_secs: u32, output: String) -> Self
     where

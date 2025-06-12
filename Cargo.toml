@@ -1,6 +1,6 @@
 [package]
 name = "Mebal"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "An OS independent replay buffer solution."
 license = "MIT"
@@ -9,27 +9,32 @@ repository = "https://github.com/lurkny/Mebal"
 
 
 [workspace]
-members = [ "crates/common",
-    "crates/recorder"
-, "crates/storage"]
+members = ["crates/common", "crates/recorder", "crates/storage"]
+
+[workspace.dependencies]
+anyhow = "1.0"
+log = "0.4"
+tokio = { version = "1.45.1", features = ["full"] }
+ffmpeg-next = "7.1.0"
+async-trait = "0.1"
 
 [dependencies]
-anyhow = "1.0"
-dioxus = {version = "0.6.3", features = ["desktop"]}
+anyhow = { workspace = true }
+dioxus = { version = "0.6.3", features = ["desktop"] }
 recorder = { path = "crates/recorder" }
 rdev = "0.5"
-log = "0.4"
+log = { workspace = true }
 env_logger = "0.10"
-tokio = { version = "1.45.1", features = ["full"] }
-
+tokio = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 
 
 [profile.release]
-lto = true           # Full LTO for cross-crate optimization
-opt-level = 3        # Aggressive optimizations
-codegen-units = 1    # Maximum optimization potential
-strip = true         # Remove debug symbols
-panic = "abort"      # Smaller, faster panic handling
+lto = true        # Full LTO for cross-crate optimization
+opt-level = 3     # Aggressive optimizations
+codegen-units = 1 # Maximum optimization potential
+strip = true      # Remove debug symbols
+panic = "abort"   # Smaller, faster panic handling
 
 [profile.wasm-dev]
 inherits = "dev"

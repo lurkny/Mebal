@@ -1,62 +1,234 @@
-body {
+* {
     margin: 0;
     padding: 0;
-    background: linear-gradient(135deg, #2e1a47, #a5582c);
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    color: #f5f5f5;
+    box-sizing: border-box;
 }
 
-.container {
-    max-width: 480px;
-    margin: 5vh auto;
-    padding: 2rem;
-    background-color: rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+body {
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+        Cantarell, sans-serif;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: #333;
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+.app-container {
+    max-width: 600px;
+    margin: 20px auto;
+    padding: 30px;
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(10px);
+}
+
+.app-title {
+    text-align: center;
+    color: #2c3e50;
+    margin-bottom: 30px;
+    font-size: 2.2em;
+    font-weight: 700;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.config-form {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
 .form-group {
-    margin-bottom: 1.5rem;
     display: flex;
     flex-direction: column;
+    gap: 8px;
 }
 
 .form-group label {
-    margin-bottom: 0.5rem;
-    font-weight: bold;
-    text-shadow: 1px 1px 3px rgba(0,0,0,0.3);
+    font-weight: 600;
+    color: #2c3e50;
+    font-size: 1.1em;
 }
 
-.form-group input {
-    padding: 0.75rem;
-    border-radius: 5px;
-    border: none;
+.form-group input,
+.form-group select {
+    padding: 12px 16px;
+    border: 2px solid #e0e6ed;
+    border-radius: 8px;
+    font-size: 1em;
+    transition: all 0.3s ease;
+    background: white;
+    color: #333;
+}
+
+.form-group input:focus,
+.form-group select:focus {
     outline: none;
-    background-color: rgba(255, 255, 255, 0.2);
-    color: #fff;
-    font-size: 1rem;
-    transition: background-color 0.3s ease;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
 }
 
-.form-group input:focus {
-    background-color: rgba(255, 255, 255, 0.3);
+.form-group input[type="number"] {
+    -moz-appearance: textfield;
 }
 
-.button {
-    width: 100%;
-    padding: 0.75rem;
-    background-color: #7e38c8;
+.form-group input[type="number"]::-webkit-outer-spin-button,
+.form-group input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+
+.form-help {
+    color: #6c757d;
+    font-size: 0.9em;
+    font-style: italic;
+    margin-top: 4px;
+}
+
+/* Output path input group with button */
+.form-group:has(button[type="button"]) {
+    gap: 12px;
+}
+
+.form-group button[type="button"] {
+    padding: 10px 16px;
+    background: #6c757d;
+    color: white;
     border: none;
-    border-radius: 5px;
-    color: #fff;
-    font-size: 1.1rem;
+    border-radius: 6px;
+    font-size: 0.9em;
     cursor: pointer;
+    transition: background-color 0.2s ease;
+    align-self: flex-start;
+}
+
+.form-group button[type="button"]:hover {
+    background: #5a6268;
+}
+
+/* Start/Stop Button */
+.button-start {
+    padding: 16px 32px;
+    background: linear-gradient(135deg, #28a745, #20c997);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1.2em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(40, 167, 69, 0.4);
     text-transform: uppercase;
     letter-spacing: 1px;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-    transition: background-color 0.3s ease;
 }
 
-.button:hover {
-    background-color: #8e44ad;
+.button-start:hover {
+    background: linear-gradient(135deg, #218838, #1ea085);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(40, 167, 69, 0.5);
+}
+
+.button-stop {
+    padding: 16px 32px;
+    background: linear-gradient(135deg, #dc3545, #c82333);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-size: 1.2em;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(220, 53, 69, 0.4);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.button-stop:hover {
+    background: linear-gradient(135deg, #c82333, #a71e2a);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(220, 53, 69, 0.5);
+}
+
+/* Status Display */
+.status-display {
+    margin-top: 20px;
+    padding: 16px;
+    border-radius: 8px;
+    text-align: center;
+    font-weight: 500;
+    font-size: 1.1em;
+}
+
+.status-active {
+    background: linear-gradient(135deg, #d4edda, #c3e6cb);
+    color: #155724;
+    border: 2px solid #c3e6cb;
+    animation: pulse 2s infinite;
+}
+
+.status-inactive {
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+    color: #6c757d;
+    border: 2px solid #dee2e6;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.4);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(40, 167, 69, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
+    }
+}
+
+/* Select dropdown styling */
+select {
+    appearance: none;
+    background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    background-size: 20px;
+    padding-right: 40px;
+}
+
+/* Responsive design */
+@media (max-width: 600px) {
+    .app-container {
+        margin: 10px;
+        padding: 20px;
+    }
+
+    .app-title {
+        font-size: 1.8em;
+    }
+
+    .button-start,
+    .button-stop {
+        font-size: 1.1em;
+        padding: 14px 28px;
+    }
+}
+
+/* Smooth transitions for all interactive elements */
+* {
+    transition: all 0.2s ease;
+}
+
+/* Focus styles for accessibility */
+*:focus {
+    outline: 2px solid #667eea;
+    outline-offset: 2px;
+}
+
+/* Improved form validation styles */
+input:invalid {
+    border-color: #dc3545;
+}
+
+input:valid {
+    border-color: #28a745;
 }

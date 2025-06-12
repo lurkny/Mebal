@@ -1,6 +1,6 @@
-use crate::cstring;
-use std::ptr;
+pub(crate) use crate::cstring;
 use crate::sys;
+use std::ptr;
 
 // Safe wrapper around AVDictionary
 pub struct AVDict(*mut sys::AVDictionary);

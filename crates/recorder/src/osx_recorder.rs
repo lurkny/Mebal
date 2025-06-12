@@ -118,23 +118,40 @@ fn capture_encode_loop_sys(
         dict.set("capture_cursor", "1"); // Include cursor in capture
         dict.set("capture_mouse_clicks", "1"); // Capture mouse clicks
 
-        // For macOS, we capture the main display (screen 0)
-        // Format: "Capture screen 0" or just "0:" for screen index
-        let url = cstring!("0:");
+        // For macOS, we capture the main display using AVFoundation
+        // IMPORTANT: Device indices can vary between systems. Common patterns:
+        // - "0:" = First camera (FaceTime HD Camera)
+        // - "1:" = Screen capture (Capture screen 0)
+        // - "2:" = Second screen if available
+        //
+        // To find correct device indices on your system, run:
+        // ffmpeg -f avfoundation -list_devices true -i ""
+        //
+        // If screen recording fails, check:
+        // 1. System Preferences > Security & Privacy > Privacy > Screen Recording
+        // 2. Grant permission to your terminal/application
+        // 3. Restart terminal after granting permission
+        let url = cstring!("1:");
         info!(
-            "[recorder] Attempting to capture display 0 at {}x{} @ {}fps",
+            "[recorder] Attempting to capture screen (device 1) at {}x{} @ {}fps",
             width, height, fps
         );
         let open_result =
             sys::avformat_open_input(&mut fmt_ctx, url.as_ptr(), input_format, dict.as_mut_ptr());
         if open_result < 0 {
             error!(
-                "[recorder] Failed to open avfoundation input. Error code: {}. Make sure screen recording permissions are granted.",
+                "[recorder] Failed to open avfoundation input. Error code: {}. This usually means:",
                 open_result
             );
+            error!("[recorder] 1. Screen recording permissions not granted");
             error!(
-                "[recorder] Try granting screen recording permissions in System Preferences > Security & Privacy > Privacy > Screen Recording"
+                "[recorder] 2. Wrong device index (try running: ffmpeg -f avfoundation -list_devices true -i \"\")"
             );
+            error!("[recorder] 3. Another app is using the capture device");
+            error!(
+                "[recorder] Fix: Go to System Preferences > Security & Privacy > Privacy > Screen Recording"
+            );
+            error!("[recorder] and grant permission to your terminal/application, then restart.");
             return;
         }
         info!("[recorder] Successfully opened AVFoundation input");

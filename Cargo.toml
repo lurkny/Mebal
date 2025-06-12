@@ -26,6 +26,7 @@ rdev = "0.5"
 log = { workspace = true }
 env_logger = "0.10"
 tokio = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
 
 
 [profile.release]

@@ -78,7 +78,7 @@ If you encounter issues with the GUI, please ensure your graphics drivers are up
 ## Roadmap
 - [x] Windows support
 - [ ] Linux support
-- [ ] macOS support
+- [x] macOS support
 - [ ] More advanced configuration options
 
 ## Acknowledgements
@@ -89,5 +89,3 @@ See [LICENSE](LICENSE) for details.
 
 ## Note
 OSX and Linux will be supported soon, I just wanted to push this code out
-
-

@@ -59,12 +59,7 @@ Output files will be saved as `output.mp4` by default. Replay buffer and other a
 
 Mebal's graphical user interface is built with [Dioxus](https://dioxuslabs.com/).
 
-### Option 1: Run the Pre-built Binary (Recommended)
-1. Download the latest release for your platform from the [Releases page](https://github.com/yourusername/mebal/releases) (or wherever you distribute binaries).
-2. Make sure you have the [FFmpeg DLLs installed](#installing-ffmpeg-dlls-on-windows) (see above).
-3. Double-click `Mebal.exe` (Windows) or run the binary for your OS. The Dioxus-powered GUI will launch automatically.
-
-### Option 2: Build and Run from Source (Developers)
+Build and Run from Source (Developers)
 If you want to build and run the GUI yourself:
 
 
